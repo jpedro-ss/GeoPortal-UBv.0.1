@@ -91,6 +91,23 @@
         </div>
         <div class="sidebar-content">
             
+            <!-- Category: Mapa de Fundo (Basemaps) -->
+            <div class="layer-category">
+                <div class="layer-category-title">
+                    <i class="fa-solid fa-earth-americas"></i> Mapa de Fundo
+                </div>
+                <div class="basemap-panel-sidebar">
+                    <div class="basemap-option active" id="basemap-osm" data-basemap="osm">
+                        <img src="https://a.tile.openstreetmap.org/12/2180/1628.png" alt="OpenStreetMap">
+                        <span>Mapa Ruas</span>
+                    </div>
+                    <div class="basemap-option" id="basemap-satellite" data-basemap="satellite">
+                        <img src="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/12/1628/2180" alt="Satellite">
+                        <span>Satélite</span>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Category: Urbano e Cadastro -->
             <div class="layer-category">
                 <div class="layer-category-title">
@@ -392,17 +409,6 @@
         </div>
     </div>
 
-    <!-- Base Map Options Selector -->
-    <div class="basemap-panel glass-panel">
-        <div class="basemap-option active" id="basemap-osm" data-basemap="osm">
-            <img src="https://a.tile.openstreetmap.org/12/2180/1628.png" alt="OpenStreetMap">
-            <span>Mapa Ruas</span>
-        </div>
-        <div class="basemap-option" id="basemap-satellite" data-basemap="satellite">
-            <img src="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/12/1628/2180" alt="Satellite">
-            <span>Satélite</span>
-        </div>
-    </div>
 
     <!-- Floating Circular Buttons -->
     <div class="floating-actions">
@@ -418,6 +424,30 @@
     <div class="glass-panel" id="cursor-coordinates-panel">
         <i class="fa-solid fa-crosshairs" style="color: var(--warning);"></i>
         <span id="cursor-coordinates">Lat: -- | Lng: -- | Escala: --</span>
+    </div>
+
+    <!-- Mobile Bottom Navigation Bar (Visible only on smartphones) -->
+    <div class="mobile-bottom-nav glass-panel" id="mobile-nav">
+        <button class="mobile-nav-btn active" data-mobile-tab="mapa">
+            <i class="fa-solid fa-map"></i>
+            <span>Mapa</span>
+        </button>
+        <button class="mobile-nav-btn" data-mobile-tab="camadas">
+            <i class="fa-solid fa-layer-group"></i>
+            <span>Camadas</span>
+        </button>
+        <button class="mobile-nav-btn" data-mobile-tab="estatisticas">
+            <i class="fa-solid fa-chart-pie"></i>
+            <span>Estatísticas</span>
+        </button>
+        <button class="mobile-nav-btn" data-mobile-tab="censo">
+            <i class="fa-solid fa-chart-simple"></i>
+            <span>Censo</span>
+        </button>
+        <button class="mobile-nav-btn" data-mobile-tab="sobre">
+            <i class="fa-solid fa-circle-info"></i>
+            <span>Sobre</span>
+        </button>
     </div>
 
     <!-- Glassmorphic Footer Panel (Incorporating Municipal Logo) -->

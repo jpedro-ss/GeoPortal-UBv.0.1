@@ -539,22 +539,18 @@ table.attribute-table tr:hover td {
     transform: scale(1.3);
 }
 
-/* Base Map Toggle Card (Floating bottom left) */
-.basemap-panel {
-    position: absolute;
-    bottom: 55px;
-    left: 20px; /* Permanently framed under the layers sidebar */
-    z-index: 10;
-    padding: 6px;
+/* Base Map Toggle Card inside Sidebar */
+.basemap-panel-sidebar {
     display: flex;
-    gap: 6px;
-    pointer-events: auto;
+    gap: 10px;
+    margin-top: 6px;
+    margin-bottom: 12px;
 }
 
 #cursor-coordinates-panel {
     position: absolute;
     bottom: 55px;
-    left: 165px; /* Framed directly next to the basemap-panel under the 350px layers sidebar */
+    left: 20px; /* Anchored nicely at the bottom left under the layers sidebar */
     z-index: 10;
     padding: 6px 12px;
     font-size: 0.7rem;
@@ -563,14 +559,13 @@ table.attribute-table tr:hover td {
     display: flex;
     align-items: center;
     gap: 8px;
-    height: 54px; /* Matches the vertical height of the basemap-panel for a perfect horizontal alignment */
 }
 
 .basemap-option {
     position: relative;
-    width: 55px;
-    height: 42px;
-    border-radius: 6px;
+    flex: 1;
+    height: 48px;
+    border-radius: 8px;
     overflow: hidden;
     cursor: pointer;
     border: 2px solid transparent;
@@ -583,7 +578,7 @@ table.attribute-table tr:hover td {
 
 .basemap-option.active {
     border-color: var(--primary);
-    box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+    box-shadow: 0 0 10px rgba(59, 130, 246, 0.4);
 }
 
 .basemap-option img {
@@ -597,12 +592,12 @@ table.attribute-table tr:hover td {
     bottom: 0;
     left: 0;
     width: 100%;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(0, 0, 0, 0.75);
     color: white;
     font-size: 0.55rem;
     font-weight: 600;
     text-align: center;
-    padding: 1px 0;
+    padding: 2px 0;
 }
 
 /* Floating Actions Menu (Bottom Right above drawer) */
@@ -993,6 +988,152 @@ table.attribute-table tr:hover td {
 
 .leaflet-top {
     top: 95px !important;
+}
+
+/* Hide mobile nav bar on desktop */
+.mobile-bottom-nav {
+    display: none;
+}
+
+/* Responsive Overrides (Premium Mobile Bottom Sheet Layout) */
+@media (max-width: 768px) {
+    /* Mobile Bottom Tab Bar */
+    .mobile-bottom-nav {
+        display: flex;
+        position: fixed;
+        bottom: 10px;
+        left: 10px;
+        right: 10px;
+        height: 60px;
+        z-index: 10000;
+        border-radius: 16px;
+        padding: 5px 10px;
+        justify-content: space-around;
+        align-items: center;
+        background: rgba(8, 22, 42, 0.95);
+        border: 1px solid var(--border-glow);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+    }
+    
+    .mobile-nav-btn {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        font-size: 0.6rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: var(--transition-fast);
+        flex: 1;
+    }
+    
+    .mobile-nav-btn i {
+        font-size: 1.1rem;
+    }
+    
+    .mobile-nav-btn.active {
+        color: var(--warning);
+        text-shadow: 0 0 10px rgba(255, 205, 0, 0.4);
+    }
+    
+    /* Header layout overrides for small viewports */
+    .nav-quick-stats {
+        display: none !important;
+    }
+    
+    #header-container {
+        left: 10px !important;
+        right: 10px !important;
+        top: 10px !important;
+        padding: 8px 12px !important;
+        gap: 10px !important;
+    }
+    
+    #header-container .brand-text p {
+        display: none !important; /* Hide subtitle to fit screen */
+    }
+    
+    #header-container .brand-text h1 {
+        font-size: 0.9rem !important;
+    }
+    
+    #header-container img {
+        height: 32px !important;
+    }
+    
+    /* Hide desktop top tab switcher on mobile */
+    #header-container div:nth-of-type(2) {
+        display: none !important;
+    }
+    
+    /* Hide circular actions, desktop pull tabs and attribution widgets on mobile */
+    .floating-actions, .sidebar-pull-tab, #cursor-coordinates-panel, .basemap-panel, #footer-panel {
+        display: none !important;
+    }
+    
+    /* Hide Leaflet controls, scale and attribution on mobile */
+    .leaflet-control-container, .leaflet-control-attribution, .leaflet-control-scale {
+        display: none !important;
+    }
+    
+    /* Mobile-first bottom sheets for sidebars */
+    .sidebar, .dashboard-panel {
+        left: 10px !important;
+        right: 10px !important;
+        width: auto !important;
+        max-height: 55vh !important;
+        bottom: 80px !important; /* Floats above bottom tab bar */
+        top: auto !important;
+        border-radius: 20px !important;
+        transform: translateY(140%) !important; /* Hide below viewport */
+        transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        z-index: 9998 !important;
+    }
+    
+    .sidebar.mobile-open, .dashboard-panel.mobile-open {
+        transform: translateY(0) !important; /* Slide up bottom sheet */
+    }
+    
+    .sidebar-header, .dashboard-header {
+        padding: 12px 16px !important;
+    }
+    
+    .sidebar-content, .dashboard-content {
+        padding: 12px 16px !important;
+    }
+    
+    /* Close button on header acts as hide */
+    .sidebar-header .layer-action-btn, .dashboard-header .layer-action-btn {
+        font-size: 1.1rem !important;
+    }
+    
+    /* Mobilize overlay panels (Censo and Sobre) */
+    .content-panel-overlay {
+        top: 65px !important;
+        bottom: 80px !important;
+        left: 10px !important;
+        right: 10px !important;
+        padding: 10px !important;
+        border-radius: 20px !important;
+        z-index: 9997 !important;
+    }
+    
+    .center-dashboard-card {
+        padding: 15px !important;
+        margin-bottom: 0 !important;
+    }
+    
+    .stat-grid {
+        grid-template-columns: 1fr !important; /* Stack stats in one column */
+        gap: 8px !important;
+    }
+    
+    .attributes-drawer {
+        display: none !important; /* Not suitable for small mobile screens */
+    }
 }
 
 

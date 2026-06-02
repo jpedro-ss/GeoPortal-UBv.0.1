@@ -407,6 +407,74 @@ function initApp() {
     loadAllLayers();
     setupUIEvents();
     setupCharts();
+    setupMobileEvents();
+}
+
+// Setup Mobile View Actions
+function setupMobileEvents() {
+    const mobileBtns = document.querySelectorAll('.mobile-nav-btn');
+    if (!mobileBtns.length) return;
+
+    const sidebar = document.getElementById('layer-sidebar');
+    const dashboard = document.getElementById('dashboard-sidebar');
+    const censoOverlay = document.getElementById('censo-panel-overlay');
+    const sobreOverlay = document.getElementById('sobre-panel-overlay');
+
+    const resetMobileViews = () => {
+        sidebar.classList.remove('mobile-open');
+        dashboard.classList.remove('mobile-open');
+        if (censoOverlay) censoOverlay.classList.remove('active');
+        if (sobreOverlay) sobreOverlay.classList.remove('active');
+    };
+
+    mobileBtns.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const targetTab = e.currentTarget.dataset.mobileTab;
+
+            // Highlight active button
+            mobileBtns.forEach(b => b.classList.remove('active'));
+            e.currentTarget.classList.add('active');
+
+            // Reset all mobile sheets
+            resetMobileViews();
+
+            // Toggle target sheet/view
+            if (targetTab === 'camadas') {
+                sidebar.classList.add('mobile-open');
+            } else if (targetTab === 'estatisticas') {
+                dashboard.classList.add('mobile-open');
+            } else if (targetTab === 'censo' && censoOverlay) {
+                censoOverlay.classList.add('active');
+            } else if (targetTab === 'sobre' && sobreOverlay) {
+                sobreOverlay.classList.add('active');
+            }
+        });
+    });
+
+    // Handle close buttons inside sidebars for mobile devices
+    const closeLeft = document.getElementById('collapse-sidebar');
+    if (closeLeft) {
+        closeLeft.addEventListener('click', () => {
+            if (window.innerWidth <= 768) {
+                resetMobileViews();
+                mobileBtns.forEach(b => b.classList.remove('active'));
+                const mapBtn = document.querySelector('.mobile-nav-btn[data-mobile-tab="mapa"]');
+                if (mapBtn) mapBtn.classList.add('active');
+            }
+        });
+    }
+
+    const closeRight = document.getElementById('collapse-dashboard');
+    if (closeRight) {
+        closeRight.addEventListener('click', () => {
+            if (window.innerWidth <= 768) {
+                resetMobileViews();
+                mobileBtns.forEach(b => b.classList.remove('active'));
+                const mapBtn = document.querySelector('.mobile-nav-btn[data-mobile-tab="mapa"]');
+                if (mapBtn) mapBtn.classList.add('active');
+            }
+        });
+    }
 }
 
 // Initialize Leaflet Map
