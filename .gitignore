@@ -1,0 +1,10 @@
+# Pastas com dados brutos pesados (não enviar ao GitHub para evitar limites de tamanho)
+Acesso_ambiental/
+Acesso_rural/
+Acesso_urbano/
+
+# Arquivos temporários e builds locais
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
