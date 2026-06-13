@@ -1415,7 +1415,11 @@ function initTools() {
             true, false, null
         );
         
-        fetch(`${apiBase}/api/generate_report?type=municipal&options=${options.join(',')}`)
+        const activeLayers = state.layers
+            .filter(l => state.map.hasLayer(l.layerObject) || l.visible)
+            .map(l => l.id);
+        
+        fetch(`${apiBase}/api/generate_report?type=municipal&options=${options.join(',')}&basemap=${state.currentBaseMap}&active_layers=${encodeURIComponent(activeLayers.join(','))}`)
             .then(response => {
                 if (!response.ok) throw new Error("Erro ao gerar relatório do município. Verifique se o servidor local está rodando.");
                 return response.blob();
@@ -1465,7 +1469,8 @@ function initTools() {
             ymin: bounds.getSouth(),
             xmax: bounds.getEast(),
             ymax: bounds.getNorth(),
-            layers: activeLayers
+            layers: activeLayers,
+            basemap: state.currentBaseMap
         };
         
         fetch(`${apiBase}/api/export_geopdf`, {
@@ -1566,7 +1571,11 @@ window.downloadPropertyReport = function(cod_imovel) {
             true, false, null
         );
         
-        fetch(`${apiBase}/api/generate_report?type=property&cod_imovel=${encodeURIComponent(cod_imovel)}&options=${options.join(',')}`)
+        const activeLayers = state.layers
+            .filter(l => state.map.hasLayer(l.layerObject) || l.visible)
+            .map(l => l.id);
+
+        fetch(`${apiBase}/api/generate_report?type=property&cod_imovel=${encodeURIComponent(cod_imovel)}&options=${options.join(',')}&basemap=${state.currentBaseMap}&active_layers=${encodeURIComponent(activeLayers.join(','))}`)
             .then(response => {
                 if (!response.ok) throw new Error("Erro ao compilar o relatório do imóvel rural.");
                 return response.blob();

@@ -1,6 +1,9 @@
 import os
 import json
+import math
+import requests
 import numpy as np
+from PIL import Image as PILImage
 from osgeo import ogr, osr
 import matplotlib
 matplotlib.use('Agg') # Headless backend
@@ -16,6 +19,189 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 # Define paths
 ROOT_DIR = r"c:\Users\joao_\Downloads\Portal_WebGIS"
 DATA_DIR = os.path.join(ROOT_DIR, "data")
+
+def lonlat_to_tile(lon, lat, zoom):
+    lat_rad = math.radians(lat)
+    n = 2.0 ** zoom
+    xtile = int((lon + 180.0) / 360.0 * n)
+    try:
+        ytile = int((1.0 - math.log(math.tan(lat_rad) + (1.0 / math.cos(lat_rad))) / math.pi) / 2.0 * n)
+    except Exception:
+        ytile = 0
+    return xtile, ytile
+
+def tile_to_lonlat(x, y, zoom):
+    n = 2.0 ** zoom
+    lon_min = x / n * 360.0 - 180.0
+    lon_max = (x + 1) / n * 360.0 - 180.0
+    try:
+        lat_rad_max = math.atan(math.sinh(math.pi * (1.0 - 2.0 * y / n)))
+        lat_max = math.degrees(lat_rad_max)
+    except Exception:
+        lat_max = 85.0511
+    try:
+        lat_rad_min = math.atan(math.sinh(math.pi * (1.0 - 2.0 * (y + 1) / n)))
+        lat_min = math.degrees(lat_rad_min)
+    except Exception:
+        lat_min = -85.0511
+    return lon_min, lon_max, lat_min, lat_max
+
+def get_optimal_zoom(xmin, ymin, xmax, ymax):
+    d_lon = xmax - xmin
+    if d_lon <= 0:
+        return 13
+    zoom = int(math.ceil(math.log2(1440.0 / d_lon)))
+    return max(11, min(18, zoom))
+
+def get_tile_with_cache(basemap, z, x, y):
+    cache_dir = os.path.join(ROOT_DIR, "scratch", "tile_cache", basemap, str(z), str(x))
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{y}.png")
+    
+    if os.path.exists(cache_path):
+        try:
+            return PILImage.open(cache_path)
+        except Exception:
+            try:
+                os.remove(cache_path)
+            except Exception:
+                pass
+                
+    if basemap == "satellite":
+        url = f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+    else: # osm
+        sub = "abc"[y % 3]
+        url = f"https://{sub}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            with open(cache_path, "wb") as f:
+                f.write(response.content)
+            return PILImage.open(cache_path)
+    except Exception as e:
+        print(f"Error fetching tile: {e}")
+    return None
+
+def get_deterministic_density(cd_setor, situacao):
+    h = 0
+    for char in str(cd_setor):
+        h = (h * 31 + ord(char)) & 0xffffffff
+    rand_val = (h % 10000) / 10000.0
+    if situacao == 'Urbana':
+        return int(round(180 + rand_val * 320))
+    else:
+        return int(round(5 + rand_val * 20))
+
+def get_sector_pop_style(cd_setor, situacao):
+    dens = get_deterministic_density(cd_setor, situacao)
+    fill_color = '#15803d'
+    if dens > 300:
+        fill_color = '#ef4444'
+    elif dens > 150:
+        fill_color = '#f97316'
+    elif dens > 50:
+        fill_color = '#eab308'
+    elif dens > 10:
+        fill_color = '#84cc16'
+    alpha = 0.45 if situacao == 'Urbana' else 0.2
+    return fill_color, alpha
+
+def draw_map_side_panel(fig, ax_panel, active_layers, scale_text, map_title_type, title_color, is_geopdf=False):
+    logo_path = os.path.join(DATA_DIR, "brasao_ubaira.png")
+    if os.path.exists(logo_path):
+        try:
+            logo_img = plt.imread(logo_path)
+            if is_geopdf:
+                logo_left = 0.81
+            else:
+                logo_left = 0.805
+            ax_logo = fig.add_axes([logo_left, 0.81, 0.10, 0.09])
+            ax_logo.imshow(logo_img)
+            ax_logo.axis('off')
+        except Exception as e:
+            print(f"Error drawing side panel logo: {e}")
+            
+    ax_panel.axis('off')
+    ax_panel.add_patch(plt.Rectangle((0, 0), 1, 1, facecolor='white', edgecolor='black', linewidth=1.2, transform=ax_panel.transAxes))
+    
+    ax_panel.text(0.5, 0.77, "MUNICÍPIO DE UBAÍRA", fontsize=8.0, fontweight='bold', color='#0f172a', ha='center', transform=ax_panel.transAxes)
+    ax_panel.text(0.5, 0.73, "Secretaria de Meio Ambiente", fontsize=6.5, color='#475569', ha='center', transform=ax_panel.transAxes)
+    ax_panel.text(0.5, 0.68, map_title_type, fontsize=7.5, fontweight='bold', color=title_color, ha='center', transform=ax_panel.transAxes)
+    
+    ax_panel.plot([0.05, 0.95], [0.64, 0.64], color='black', linewidth=0.5, transform=ax_panel.transAxes)
+    
+    ax_panel.text(0.1, 0.60, "LEGENDA", fontsize=7.5, fontweight='bold', color='#0f172a', transform=ax_panel.transAxes)
+    
+    legend_items = []
+    
+    layer_legend_configs = {
+        'municipio': ('#ef4444', 'none', 1.0, 'Limite Municipal', None),
+        'regiao_metropolitana': ('#a855f7', '#c084fc', 0.15, 'Região Metropol.', None),
+        'distritos': ('#3b82f6', '#93c5fd', 0.2, 'Limites Distritais', None),
+        'setores': ('#10b981', '#6ee7b7', 0.15, 'Setores Censitários', None),
+        'setores_populacao': ('#cbd5e1', '#ef4444', 0.4, 'Densidade Demogr.', None),
+        'calor_populacional': ('#f97316', '#fdba74', 0.5, 'Calor Demográfico', None),
+        'iru': ('#d97706', '#fbbf24', 0.15, 'Imóveis Rurais (CAR)', None),
+        'urbano_ast': ('#ec4899', '#fbcfe8', 0.35, 'Assentamentos (AST)', None),
+        'bioma': ('#84cc16', '#a3e635', 0.2, 'Biomas', None),
+        'vegetacao_nativa': ('#15803d', '#22c55e', 0.35, 'Vegetação Nativa', None),
+        'app_rios': ('#1d4ed8', '#3b82f6', 0.4, 'APP Margem Rio', '//'),
+        'drenagem': ('#3b82f6', 'none', 1.0, 'Redes de Rios', None),
+        'app_nascente': ('#0e7490', '#06b6d4', 0.45, 'APP Nascente', None),
+        'app_lago_natural': ('#0284c7', '#38bdf8', 0.45, 'APP Lago Natural', None),
+        'app_reservatorio': ('#0369a1', '#0ea5e9', 0.45, 'APP Reservatório', None),
+        'app_topo_morro': ('#b45309', '#f59e0b', 0.3, 'APP Topo de Morro', None),
+        'reserva_legal_proposta': ('#f97316', '#fdba74', 0.25, 'RL Proposta', None),
+        'reserva_legal_aprovada': ('#10b981', '#34d399', 0.25, 'RL Aprovada', None),
+        'reserva_legal_averbada': ('#047857', '#059669', 0.25, 'RL Averbada', None),
+        'topografia': ('#854d0e', 'none', 0.75, 'Curvas de Nível', None),
+        'modelo_digital': ('none', '#84cc16', 0.75, 'Relevo (MDE)', None),
+        'declividade': ('none', '#eab308', 0.7, 'Declividade (%)', None),
+        'deslisamento': ('none', '#3b82f6', 0.65, 'Orientação Encostas', None)
+    }
+    
+    for key in active_layers:
+        if key in layer_legend_configs:
+            edge_c, fill_c, alpha, label, hatch = layer_legend_configs[key]
+            legend_items.append((edge_c, fill_c, alpha, label, hatch))
+            
+    y_pos = 0.56
+    dy = 0.028
+    if len(legend_items) > 10:
+        dy = max(0.018, 0.28 / len(legend_items))
+        
+    for edge_c, fill_c, alpha, label, hatch in legend_items:
+        if fill_c != 'none':
+            rect = plt.Rectangle((0.1, y_pos - 0.012), 0.12, 0.02,
+                                 facecolor=fill_c, edgecolor=edge_c, alpha=alpha, hatch=hatch, linewidth=0.8, transform=ax_panel.transAxes)
+            ax_panel.add_patch(rect)
+        else:
+            ax_panel.plot([0.1, 0.22], [y_pos - 0.002, y_pos - 0.002], color=edge_c, linewidth=0.8, alpha=alpha, transform=ax_panel.transAxes)
+            
+        ax_panel.text(0.26, y_pos - 0.005, label, fontsize=6.5, color='#334155', va='center', transform=ax_panel.transAxes)
+        y_pos -= dy
+        if y_pos < 0.28:
+            break
+            
+    ax_panel.plot([0.05, 0.95], [0.26, 0.26], color='black', linewidth=0.5, transform=ax_panel.transAxes)
+    
+    ax_panel.text(0.5, 0.22, f"Escala: {scale_text}", fontsize=7.5, fontweight='bold', color='#0f172a', ha='center', transform=ax_panel.transAxes)
+    ax_panel.text(0.5, 0.18, "Projeção / Datum:", fontsize=6.5, color='#475569', ha='center', transform=ax_panel.transAxes)
+    ax_panel.text(0.5, 0.15, "UTM Zona 24S / SIRGAS 2000", fontsize=6.5, fontweight='bold', color='#334155', ha='center', transform=ax_panel.transAxes)
+    
+    ax_panel.annotate('N', xy=(0.5, 0.11), xytext=(0.5, 0.05),
+                      arrowprops=dict(facecolor='#0f172a', width=1.5, headwidth=5, shrink=0.05),
+                      horizontalalignment='center', verticalalignment='center',
+                      fontsize=8.0, fontweight='bold', color='#0f172a', xycoords=ax_panel.transAxes, textcoords=ax_panel.transAxes)
+                      
+    import datetime
+    date_str = datetime.date.today().strftime("%d/%m/%Y")
+    ax_panel.text(0.5, 0.02, f"Data: {date_str} | Fonte: CAR, IBGE, INEMA", fontsize=5.5, color='#64748b', ha='center', transform=ax_panel.transAxes)
 
 def get_utm_transform(layer):
     source_srs = layer.GetSpatialRef()
@@ -306,22 +492,455 @@ def calculate_property_stats(cod_imovel, options="all"):
         "count_contours": count_contours
     }
 
-def add_geom_to_plot(ax, geom, edge_color, fill_color, alpha=1.0, hatch=None):
-    if geom.GetGeometryType() in [ogr.wkbPolygon, ogr.wkbMultiPolygon]:
-        for i in range(geom.GetGeometryCount()):
-            ring = geom.GetGeometryRef(i)
-            if ring.GetGeometryType() == ogr.wkbLinearRing:
-                points = [ring.GetPoint(j)[:2] for j in range(ring.GetPointCount())]
-                poly = MplPolygon(points, edgecolor=edge_color, facecolor=fill_color, alpha=alpha, hatch=hatch)
-                ax.add_patch(poly)
-            else:
-                for k in range(ring.GetGeometryCount()):
-                    sub_ring = ring.GetGeometryRef(k)
-                    points = [sub_ring.GetPoint(j)[:2] for j in range(sub_ring.GetPointCount())]
-                    poly = MplPolygon(points, edgecolor=edge_color, facecolor=fill_color, alpha=alpha, hatch=hatch)
+def add_geom_to_plot(ax, geom, edge_color, fill_color, alpha=1.0, hatch=None, linewidth=1.0):
+    if not geom:
+        return
+    gtype = geom.GetGeometryType()
+    
+    if gtype in [ogr.wkbPolygon, ogr.wkbMultiPolygon]:
+        if gtype == ogr.wkbPolygon:
+            for i in range(geom.GetGeometryCount()):
+                ring = geom.GetGeometryRef(i)
+                pts = [ring.GetPoint(j)[:2] for j in range(ring.GetPointCount())]
+                if len(pts) > 2:
+                    poly = MplPolygon(pts, edgecolor=edge_color, facecolor=fill_color, alpha=alpha, hatch=hatch, linewidth=linewidth)
                     ax.add_patch(poly)
+        else:
+            for idx in range(geom.GetGeometryCount()):
+                sub_geom = geom.GetGeometryRef(idx)
+                for i in range(sub_geom.GetGeometryCount()):
+                    ring = sub_geom.GetGeometryRef(i)
+                    pts = [ring.GetPoint(j)[:2] for j in range(ring.GetPointCount())]
+                    if len(pts) > 2:
+                        poly = MplPolygon(pts, edgecolor=edge_color, facecolor=fill_color, alpha=alpha, hatch=hatch, linewidth=linewidth)
+                        ax.add_patch(poly)
+    elif gtype in [ogr.wkbLineString, ogr.wkbMultiLineString]:
+        if gtype == ogr.wkbLineString:
+            pts = [geom.GetPoint(j)[:2] for j in range(geom.GetPointCount())]
+            if len(pts) > 1:
+                x, y = zip(*pts)
+                ax.plot(x, y, color=edge_color, linewidth=linewidth, alpha=alpha)
+        else:
+            for idx in range(geom.GetGeometryCount()):
+                sub_geom = geom.GetGeometryRef(idx)
+                pts = [sub_geom.GetPoint(j)[:2] for j in range(sub_geom.GetPointCount())]
+                if len(pts) > 1:
+                    x, y = zip(*pts)
+                    ax.plot(x, y, color=edge_color, linewidth=linewidth, alpha=alpha)
+    elif gtype in [ogr.wkbPoint, ogr.wkbMultiPoint]:
+        if gtype == ogr.wkbPoint:
+            pt = geom.GetPoint(0)
+            ax.plot(pt[0], pt[1], marker='o', color=edge_color, markerfacecolor=fill_color, markersize=5, alpha=alpha)
+        else:
+            for idx in range(geom.GetGeometryCount()):
+                sub_geom = geom.GetGeometryRef(idx)
+                pt = sub_geom.GetPoint(0)
+                ax.plot(pt[0], pt[1], marker='o', color=edge_color, markerfacecolor=fill_color, markersize=5, alpha=alpha)
 
-def generate_property_map(cod_imovel, output_png_path, options="all"):
+def plot_all_active_layers(ax, xmin, ymin, xmax, ymax, active_layers, basemap="osm", target_cod_imovel=None):
+    if basemap in ["osm", "satellite"]:
+        try:
+            zoom = get_optimal_zoom(xmin, ymin, xmax, ymax)
+            x_min_tile, y_min_tile = lonlat_to_tile(xmin, ymax, zoom)
+            x_max_tile, y_max_tile = lonlat_to_tile(xmax, ymin, zoom)
+            
+            x1, x2 = min(x_min_tile, x_max_tile), max(x_min_tile, x_max_tile)
+            y1, y2 = min(y_min_tile, y_max_tile), max(y_min_tile, y_max_tile)
+            
+            num_tiles = (x2 - x1 + 1) * (y2 - y1 + 1)
+            while num_tiles > 35 and zoom > 10:
+                zoom -= 1
+                x_min_tile, y_min_tile = lonlat_to_tile(xmin, ymax, zoom)
+                x_max_tile, y_max_tile = lonlat_to_tile(xmax, ymin, zoom)
+                x1, x2 = min(x_min_tile, x_max_tile), max(x_min_tile, x_max_tile)
+                y1, y2 = min(y_min_tile, y_max_tile), max(y_min_tile, y_max_tile)
+                num_tiles = (x2 - x1 + 1) * (y2 - y1 + 1)
+                
+            for x in range(x1, x2 + 1):
+                for y in range(y1, y2 + 1):
+                    tile_img = get_tile_with_cache(basemap, zoom, x, y)
+                    if tile_img:
+                        tile_lon_min, tile_lon_max, tile_lat_min, tile_lat_max = tile_to_lonlat(x, y, zoom)
+                        ax.imshow(tile_img, extent=[tile_lon_min, tile_lon_max, tile_lat_min, tile_lat_max], origin='upper', zorder=0)
+        except Exception as e:
+            print(f"Error drawing basemap tiles: {e}")
+            
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    
+    raster_bounds = [-39.849356826, -39.526408502, -13.547090841, -13.0856531]
+    raster_configs = {
+        'modelo_digital': ('modelo_digital.png', 0.75),
+        'declividade': ('declividade.png', 0.7),
+        'deslisamento': ('deslisamento.png', 0.65)
+    }
+    for r_id in ['modelo_digital', 'declividade', 'deslisamento']:
+        if r_id in active_layers:
+            filename, r_alpha = raster_configs[r_id]
+            raster_path = os.path.join(DATA_DIR, "rasters", filename)
+            if os.path.exists(raster_path):
+                try:
+                    r_img = plt.imread(raster_path)
+                    ax.imshow(r_img, extent=[raster_bounds[0], raster_bounds[1], raster_bounds[2], raster_bounds[3]], origin='upper', alpha=r_alpha, zorder=1)
+                except Exception as e:
+                    print(f"Error loading raster {r_id}: {e}")
+                    
+    ring = ogr.Geometry(ogr.wkbLinearRing)
+    ring.AddPoint(xmin, ymin)
+    ring.AddPoint(xmax, ymin)
+    ring.AddPoint(xmax, ymax)
+    ring.AddPoint(xmin, ymax)
+    ring.AddPoint(xmin, ymin)
+    bbox_geom = ogr.Geometry(ogr.wkbPolygon)
+    bbox_geom.AddGeometry(ring)
+    
+    driver = ogr.GetDriverByName("GeoJSON")
+    
+    vector_layers_configs = {
+        'municipio': {
+            'filename': 'municipio.geojson',
+            'edge_color': '#ef4444',
+            'fill_color': 'none',
+            'alpha': 1.0,
+            'linewidth': 2.0,
+            'hatch': None
+        },
+        'regiao_metropolitana': {
+            'filename': 'regiao_metropolitana.geojson',
+            'edge_color': '#a855f7',
+            'fill_color': '#c084fc',
+            'alpha': 0.08,
+            'linewidth': 1.5,
+            'hatch': None
+        },
+        'distritos': {
+            'filename': 'distritos.geojson',
+            'edge_color': '#3b82f6',
+            'fill_color': '#93c5fd',
+            'alpha': 0.15,
+            'linewidth': 1.5,
+            'hatch': None
+        },
+        'setores': {
+            'filename': 'setores.geojson',
+            'edge_color': '#10b981',
+            'fill_color': '#6ee7b7',
+            'alpha': 0.1,
+            'linewidth': 1.0,
+            'hatch': None
+        },
+        'zona_urbana': {
+            'filename': 'zona_urbana.geojson',
+            'edge_color': '#64748b',
+            'fill_color': 'none',
+            'alpha': 0.6,
+            'linewidth': 0.8,
+            'hatch': None
+        },
+        'iru': {
+            'filename': 'iru.geojson',
+            'edge_color': '#d97706',
+            'fill_color': '#fbbf24',
+            'alpha': 0.15,
+            'linewidth': 1.0,
+            'hatch': None
+        },
+        'urbano_ast': {
+            'filename': 'urbano_ast.geojson',
+            'edge_color': '#ec4899',
+            'fill_color': '#fbcfe8',
+            'alpha': 0.35,
+            'linewidth': 1.5,
+            'hatch': None
+        },
+        'bioma': {
+            'filename': 'bioma.geojson',
+            'edge_color': '#84cc16',
+            'fill_color': '#a3e635',
+            'alpha': 0.2,
+            'linewidth': 1.5,
+            'hatch': None
+        },
+        'vegetacao_nativa': {
+            'filename': 'vegetacao_nativa.geojson',
+            'edge_color': '#15803d',
+            'fill_color': '#22c55e',
+            'alpha': 0.35,
+            'linewidth': 0.8,
+            'hatch': None
+        },
+        'app_rios': {
+            'filename': 'app_rios.geojson',
+            'edge_color': '#1d4ed8',
+            'fill_color': '#3b82f6',
+            'alpha': 0.4,
+            'linewidth': 1.0,
+            'hatch': '//'
+        },
+        'drenagem': {
+            'filename': 'drenagem.geojson',
+            'edge_color': '#3b82f6',
+            'fill_color': 'none',
+            'alpha': 1.0,
+            'linewidth': 1.5,
+            'hatch': None
+        },
+        'app_nascente': {
+            'filename': 'app_nascente.geojson',
+            'edge_color': '#0e7490',
+            'fill_color': '#06b6d4',
+            'alpha': 0.45,
+            'linewidth': 1.0,
+            'hatch': None
+        },
+        'app_lago_natural': {
+            'filename': 'app_lago_natural.geojson',
+            'edge_color': '#0284c7',
+            'fill_color': '#38bdf8',
+            'alpha': 0.45,
+            'linewidth': 1.0,
+            'hatch': None
+        },
+        'app_reservatorio': {
+            'filename': 'app_reservatorio.geojson',
+            'edge_color': '#0369a1',
+            'fill_color': '#0ea5e9',
+            'alpha': 0.45,
+            'linewidth': 1.0,
+            'hatch': None
+        },
+        'app_topo_morro': {
+            'filename': 'app_topo_morro.geojson',
+            'edge_color': '#b45309',
+            'fill_color': '#f59e0b',
+            'alpha': 0.3,
+            'linewidth': 1.0,
+            'hatch': None
+        },
+        'reserva_legal_proposta': {
+            'filename': 'reserva_legal_proposta.geojson',
+            'edge_color': '#f97316',
+            'fill_color': '#fdba74',
+            'alpha': 0.25,
+            'linewidth': 1.0,
+            'hatch': None
+        },
+        'reserva_legal_aprovada': {
+            'filename': 'reserva_legal_aprovada.geojson',
+            'edge_color': '#10b981',
+            'fill_color': '#34d399',
+            'alpha': 0.25,
+            'linewidth': 1.0,
+            'hatch': None
+        },
+        'reserva_legal_averbada': {
+            'filename': 'reserva_legal_averbada.geojson',
+            'edge_color': '#047857',
+            'fill_color': '#059669',
+            'alpha': 0.25,
+            'linewidth': 1.0,
+            'hatch': None
+        },
+        'topografia': {
+            'filename': 'topografia.geojson',
+            'edge_color': '#854d0e',
+            'fill_color': 'none',
+            'alpha': 0.75,
+            'linewidth': 0.4,
+            'hatch': None
+        }
+    }
+    
+    vector_layers_drawing_order = [
+        'regiao_metropolitana', 'distritos', 'setores', 'iru', 'urbano_ast',
+        'bioma', 'vegetacao_nativa', 'app_topo_morro', 'app_lago_natural',
+        'app_reservatorio', 'app_rios', 'app_nascente',
+        'zona_urbana', 'drenagem', 'topografia', 'municipio'
+    ]
+    
+    for key in vector_layers_drawing_order:
+        if key not in active_layers:
+            continue
+            
+        cfg = vector_layers_configs.get(key)
+        if not cfg:
+            continue
+            
+        filepath = os.path.join(DATA_DIR, cfg['filename'])
+        if not os.path.exists(filepath):
+            continue
+            
+        try:
+            ds = driver.Open(filepath, 0)
+            if not ds:
+                continue
+            layer = ds.GetLayer()
+            layer.SetSpatialFilter(bbox_geom)
+            
+            for feat in layer:
+                geom = feat.GetGeometryRef()
+                if not geom:
+                    continue
+                    
+                if key == 'iru':
+                    feat_cod = feat.GetField("cod_imovel")
+                    if target_cod_imovel and feat_cod == target_cod_imovel:
+                        add_geom_to_plot(ax, geom, '#d97706', '#fbbf24', alpha=0.12, linewidth=1.5)
+                    else:
+                        add_geom_to_plot(ax, geom, '#94a3b8', '#e2e8f0', alpha=0.3, linewidth=0.8)
+                else:
+                    add_geom_to_plot(ax, geom, cfg['edge_color'], cfg['fill_color'], alpha=cfg['alpha'], hatch=cfg['hatch'], linewidth=cfg['linewidth'])
+        except Exception as e:
+            print(f"Error plotting vector layer {key}: {e}")
+            
+    if 'setores_populacao' in active_layers:
+        filepath = os.path.join(DATA_DIR, "setores.geojson")
+        if os.path.exists(filepath):
+            try:
+                ds = driver.Open(filepath, 0)
+                if ds:
+                    layer = ds.GetLayer()
+                    layer.SetSpatialFilter(bbox_geom)
+                    for feat in layer:
+                        geom = feat.GetGeometryRef()
+                        if geom:
+                            cd_setor = feat.GetField("CD_SETOR")
+                            situacao = feat.GetField("SITUACAO")
+                            fill_color, alpha = get_sector_pop_style(cd_setor, situacao)
+                            add_geom_to_plot(ax, geom, '#ffffff', fill_color, alpha=alpha, linewidth=0.6)
+            except Exception as e:
+                print(f"Error plotting setores_populacao: {e}")
+                
+    if 'calor_populacional' in active_layers:
+        filepath = os.path.join(DATA_DIR, "setores.geojson")
+        if os.path.exists(filepath):
+            try:
+                ds = driver.Open(filepath, 0)
+                if ds:
+                    layer = ds.GetLayer()
+                    layer.SetSpatialFilter(bbox_geom)
+                    centroids = []
+                    densities = []
+                    for feat in layer:
+                        geom = feat.GetGeometryRef()
+                        if geom:
+                            centroid = geom.Centroid()
+                            if centroid:
+                                pt = centroid.GetPoint(0)
+                                cd_setor = feat.GetField("CD_SETOR")
+                                situacao = feat.GetField("SITUACAO")
+                                dens = get_deterministic_density(cd_setor, situacao)
+                                centroids.append(pt[:2])
+                                densities.append(dens)
+                    if centroids:
+                        centroids = np.array(centroids)
+                        densities = np.array(densities)
+                        grid_x, grid_y = np.meshgrid(np.linspace(xmin, xmax, 150), np.linspace(ymin, ymax, 150))
+                        grid_z = np.zeros_like(grid_x)
+                        sigma = max(0.005, (xmax - xmin) * 0.03)
+                        for pt, dens in zip(centroids, densities):
+                            dist_sq = (grid_x - pt[0])**2 + (grid_y - pt[1])**2
+                            grid_z += dens * np.exp(-dist_sq / (2 * (sigma**2)))
+                        max_val = grid_z.max()
+                        if max_val > 0:
+                            grid_masked = np.ma.masked_where(grid_z < (max_val * 0.01), grid_z)
+                            ax.imshow(grid_masked, extent=[xmin, xmax, ymin, ymax], origin='lower', cmap='YlOrRd', alpha=0.5, zorder=2)
+            except Exception as e:
+                print(f"Error plotting calor_populacional heatmap: {e}")
+
+def draw_map_side_panel(fig, ax_panel, active_layers, scale_text, map_title_type, title_color, is_geopdf=False):
+    logo_path = os.path.join(DATA_DIR, "brasao_ubaira.png")
+    if os.path.exists(logo_path):
+        try:
+            logo_img = plt.imread(logo_path)
+            if is_geopdf:
+                logo_left = 0.81
+            else:
+                logo_left = 0.805
+            ax_logo = fig.add_axes([logo_left, 0.81, 0.10, 0.09])
+            ax_logo.imshow(logo_img)
+            ax_logo.axis('off')
+        except Exception as e:
+            print(f"Error drawing side panel logo: {e}")
+            
+    ax_panel.axis('off')
+    ax_panel.add_patch(plt.Rectangle((0, 0), 1, 1, facecolor='white', edgecolor='black', linewidth=1.2, transform=ax_panel.transAxes))
+    
+    ax_panel.text(0.5, 0.77, "MUNICÍPIO DE UBAÍRA", fontsize=8.0, fontweight='bold', color='#0f172a', ha='center', transform=ax_panel.transAxes)
+    ax_panel.text(0.5, 0.73, "Secretaria de Meio Ambiente", fontsize=6.5, color='#475569', ha='center', transform=ax_panel.transAxes)
+    ax_panel.text(0.5, 0.68, map_title_type, fontsize=7.5, fontweight='bold', color=title_color, ha='center', transform=ax_panel.transAxes)
+    
+    ax_panel.plot([0.05, 0.95], [0.64, 0.64], color='black', linewidth=0.5, transform=ax_panel.transAxes)
+    
+    ax_panel.text(0.1, 0.60, "LEGENDA", fontsize=7.5, fontweight='bold', color='#0f172a', transform=ax_panel.transAxes)
+    
+    legend_items = []
+    
+    layer_legend_configs = {
+        'municipio': ('#ef4444', 'none', 1.0, 'Limite Municipal', None),
+        'regiao_metropolitana': ('#a855f7', '#c084fc', 0.15, 'Região Metropol.', None),
+        'distritos': ('#3b82f6', '#93c5fd', 0.2, 'Limites Distritais', None),
+        'setores': ('#10b981', '#6ee7b7', 0.15, 'Setores Censitários', None),
+        'setores_populacao': ('#cbd5e1', '#ef4444', 0.4, 'Densidade Demogr.', None),
+        'calor_populacional': ('#f97316', '#fdba74', 0.5, 'Calor Demográfico', None),
+        'iru': ('#d97706', '#fbbf24', 0.15, 'Imóveis Rurais (CAR)', None),
+        'urbano_ast': ('#ec4899', '#fbcfe8', 0.35, 'Assentamentos (AST)', None),
+        'bioma': ('#84cc16', '#a3e635', 0.2, 'Biomas', None),
+        'vegetacao_nativa': ('#15803d', '#22c55e', 0.35, 'Vegetação Nativa', None),
+        'app_rios': ('#1d4ed8', '#3b82f6', 0.4, 'APP Margem Rio', '//'),
+        'drenagem': ('#3b82f6', 'none', 1.0, 'Redes de Rios', None),
+        'app_nascente': ('#0e7490', '#06b6d4', 0.45, 'APP Nascente', None),
+        'app_lago_natural': ('#0284c7', '#38bdf8', 0.45, 'APP Lago Natural', None),
+        'app_reservatorio': ('#0369a1', '#0ea5e9', 0.45, 'APP Reservatório', None),
+        'app_topo_morro': ('#b45309', '#f59e0b', 0.3, 'APP Topo de Morro', None),
+        'reserva_legal_proposta': ('#f97316', '#fdba74', 0.25, 'RL Proposta', None),
+        'reserva_legal_aprovada': ('#10b981', '#34d399', 0.25, 'RL Aprovada', None),
+        'reserva_legal_averbada': ('#047857', '#059669', 0.25, 'RL Averbada', None),
+        'topografia': ('#854d0e', 'none', 0.75, 'Curvas de Nível', None),
+        'modelo_digital': ('none', '#84cc16', 0.75, 'Relevo (MDE)', None),
+        'declividade': ('none', '#eab308', 0.7, 'Declividade (%)', None),
+        'deslisamento': ('none', '#3b82f6', 0.65, 'Orientação Encostas', None)
+    }
+    
+    for key in active_layers:
+        if key in layer_legend_configs:
+            edge_c, fill_c, alpha, label, hatch = layer_legend_configs[key]
+            legend_items.append((edge_c, fill_c, alpha, label, hatch))
+            
+    y_pos = 0.56
+    dy = 0.028
+    if len(legend_items) > 10:
+        dy = max(0.018, 0.28 / len(legend_items))
+        
+    for edge_c, fill_c, alpha, label, hatch in legend_items:
+        if fill_c != 'none':
+            rect = plt.Rectangle((0.1, y_pos - 0.012), 0.12, 0.02,
+                                 facecolor=fill_c, edgecolor=edge_c, alpha=alpha, hatch=hatch, linewidth=0.8, transform=ax_panel.transAxes)
+            ax_panel.add_patch(rect)
+        else:
+            ax_panel.plot([0.1, 0.22], [y_pos - 0.002, y_pos - 0.002], color=edge_c, linewidth=0.8, alpha=alpha, transform=ax_panel.transAxes)
+            
+        ax_panel.text(0.26, y_pos - 0.005, label, fontsize=6.5, color='#334155', va='center', transform=ax_panel.transAxes)
+        y_pos -= dy
+        if y_pos < 0.28:
+            break
+            
+    ax_panel.plot([0.05, 0.95], [0.26, 0.26], color='black', linewidth=0.5, transform=ax_panel.transAxes)
+    
+    ax_panel.text(0.5, 0.22, f"Escala: {scale_text}", fontsize=7.5, fontweight='bold', color='#0f172a', ha='center', transform=ax_panel.transAxes)
+    ax_panel.text(0.5, 0.18, "Projeção / Datum:", fontsize=6.5, color='#475569', ha='center', transform=ax_panel.transAxes)
+    ax_panel.text(0.5, 0.15, "UTM Zona 24S / SIRGAS 2000", fontsize=6.5, fontweight='bold', color='#334155', ha='center', transform=ax_panel.transAxes)
+    
+    ax_panel.annotate('N', xy=(0.5, 0.11), xytext=(0.5, 0.05),
+                      arrowprops=dict(facecolor='#0f172a', width=1.5, headwidth=5, shrink=0.05),
+                      horizontalalignment='center', verticalalignment='center',
+                      fontsize=8.0, fontweight='bold', color='#0f172a', xycoords=ax_panel.transAxes, textcoords=ax_panel.transAxes)
+                      
+    import datetime
+    date_str = datetime.date.today().strftime("%d/%m/%Y")
+    ax_panel.text(0.5, 0.02, f"Data: {date_str} | Fonte: CAR, IBGE, INEMA", fontsize=5.5, color='#64748b', ha='center', transform=ax_panel.transAxes)
+
+def generate_property_map(cod_imovel, output_png_path, options="all", basemap="osm", active_layers=None):
     driver = ogr.GetDriverByName("GeoJSON")
     ds_iru = driver.Open(os.path.join(DATA_DIR, "iru.geojson"), 0)
     layer_iru = ds_iru.GetLayer()
@@ -330,17 +949,9 @@ def generate_property_map(cod_imovel, output_png_path, options="all"):
     if not feat_prop:
         return False
         
-    opts = [o.strip() for o in options.split(',')]
-    show_all = "all" in opts or len(opts) == 0 or (len(opts) == 1 and opts[0] == "")
-    show_app_rios = show_all or "app_rios" in opts
-    show_app_nas = show_all or "app_nascente" in opts
-    show_veg = show_all or "vegetacao_nativa" in opts
-    show_topo = show_all or "topografia" in opts
-    
     prop_geom = feat_prop.GetGeometryRef()
     extent = prop_geom.GetEnvelope() # xmin, xmax, ymin, ymax
     
-    # Calculate buffered extent
     dx_orig = extent[1] - extent[0]
     dy_orig = extent[3] - extent[2]
     buffer_ratio = 0.15
@@ -351,7 +962,6 @@ def generate_property_map(cod_imovel, output_png_path, options="all"):
     dx = xmax - xmin
     dy = ymax - ymin
     
-    # Layout math for figure size 8.5 x 6 inches
     W_fig = 8.5
     H_fig = 6.0
     W_max_map = 5.44
@@ -375,87 +985,19 @@ def generate_property_map(cod_imovel, output_png_path, options="all"):
     
     fig = plt.figure(figsize=(W_fig, H_fig), dpi=150)
     
-    # Add map axis
     ax_map = fig.add_axes([left_frac, bottom_frac, w_frac, h_frac])
-    ax_map.set_xlim(xmin, xmax)
-    ax_map.set_ylim(ymin, ymax)
-    ax_map.set_aspect('equal')
     
-    # 1. Plot context properties
-    layer_iru.ResetReading()
-    layer_iru.SetAttributeFilter(None)
-    layer_iru.SetSpatialFilter(prop_geom)
-    for feat in layer_iru:
-        if feat.GetField("cod_imovel") != cod_imovel:
-            add_geom_to_plot(ax_map, feat.GetGeometryRef(), '#94a3b8', '#e2e8f0', alpha=0.3)
-            
-    # 2. Plot Topography
-    if show_topo:
-        try:
-            ds_topo = driver.Open(os.path.join(DATA_DIR, "topografia.geojson"), 0)
-            if ds_topo:
-                layer_topo = ds_topo.GetLayer()
-                layer_topo.SetSpatialFilter(prop_geom)
-                for feat in layer_topo:
-                    geom = feat.GetGeometryRef()
-                    intersection = prop_geom.Intersection(geom)
-                    if intersection and not intersection.IsEmpty():
-                        geom_type = intersection.GetGeometryType()
-                        if geom_type in [ogr.wkbLineString, ogr.wkbMultiLineString]:
-                            for i in range(intersection.GetGeometryCount()):
-                                line = intersection.GetGeometryRef(i)
-                                if line.GetGeometryType() == ogr.wkbLineString:
-                                    pts = [line.GetPoint(j)[:2] for j in range(line.GetPointCount())]
-                                    if len(pts) > 1:
-                                        x, y = zip(*pts)
-                                        ax_map.plot(x, y, color='#cbd5e1', linewidth=0.5, alpha=0.6)
-                                else:
-                                    for k in range(line.GetGeometryCount()):
-                                        sub_line = line.GetGeometryRef(k)
-                                        pts = [sub_line.GetPoint(j)[:2] for j in range(sub_line.GetPointCount())]
-                                        if len(pts) > 1:
-                                            x, y = zip(*pts)
-                                            ax_map.plot(x, y, color='#cbd5e1', linewidth=0.5, alpha=0.6)
-        except Exception as e:
-            print(f"Error drawing topography contours: {e}")
-            
-    # 3. Plot target property
-    add_geom_to_plot(ax_map, prop_geom, '#d97706', '#fbbf24', alpha=0.12)
+    if active_layers is None:
+        opts = [o.strip() for o in options.split(',')]
+        show_all = "all" in opts or len(opts) == 0 or (len(opts) == 1 and opts[0] == "")
+        active_layers = ['iru']
+        if show_all or "app_rios" in opts: active_layers.append('app_rios')
+        if show_all or "app_nascente" in opts: active_layers.append('app_nascente')
+        if show_all or "vegetacao_nativa" in opts: active_layers.append('vegetacao_nativa')
+        if show_all or "topografia" in opts: active_layers.append('topografia')
+        
+    plot_all_active_layers(ax_map, xmin, ymin, xmax, ymax, active_layers, basemap=basemap, target_cod_imovel=cod_imovel)
     
-    # 4. Plot Native Veg
-    if show_veg:
-        ds_veg = driver.Open(os.path.join(DATA_DIR, "vegetacao_nativa.geojson"), 0)
-        if ds_veg:
-            layer_veg = ds_veg.GetLayer()
-            layer_veg.SetSpatialFilter(prop_geom)
-            for feat in layer_veg:
-                intersection = prop_geom.Intersection(feat.GetGeometryRef())
-                if intersection and not intersection.IsEmpty():
-                    add_geom_to_plot(ax_map, intersection, '#15803d', '#22c55e', alpha=0.35)
-                    
-    # 5. Plot River APP
-    if show_app_rios:
-        ds_rios = driver.Open(os.path.join(DATA_DIR, "app_rios.geojson"), 0)
-        if ds_rios:
-            layer_rios = ds_rios.GetLayer()
-            layer_rios.SetSpatialFilter(prop_geom)
-            for feat in layer_rios:
-                intersection = prop_geom.Intersection(feat.GetGeometryRef())
-                if intersection and not intersection.IsEmpty():
-                    add_geom_to_plot(ax_map, intersection, '#1d4ed8', '#3b82f6', alpha=0.4, hatch='//')
-                    
-    # 6. Plot Spring APP
-    if show_app_nas:
-        ds_nas = driver.Open(os.path.join(DATA_DIR, "app_nascente.geojson"), 0)
-        if ds_nas:
-            layer_nas = ds_nas.GetLayer()
-            layer_nas.SetSpatialFilter(prop_geom)
-            for feat in layer_nas:
-                intersection = prop_geom.Intersection(feat.GetGeometryRef())
-                if intersection and not intersection.IsEmpty():
-                    add_geom_to_plot(ax_map, intersection, '#0e7490', '#06b6d4', alpha=0.45)
-                    
-    # Format coordinate ticks and grids
     ax_map.grid(True, linestyle=':', color='#cbd5e1', linewidth=0.5, alpha=0.8)
     for spine in ax_map.spines.values():
         spine.set_color('black')
@@ -471,8 +1013,6 @@ def generate_property_map(cod_imovel, output_png_path, options="all"):
     ax_map.yaxis.set_major_formatter(ticker.FuncFormatter(format_lat))
     ax_map.tick_params(axis='both', which='major', labelsize=7.5, colors='#1e293b')
     
-    # Scale Bar (graphical scale bar inside ax_map)
-    import math
     lat_mid = (ymin + ymax) / 2.0
     m_per_deg_lon = 111000.0 * math.cos(math.radians(lat_mid))
     ground_width_m = dx * m_per_deg_lon
@@ -508,80 +1048,18 @@ def generate_property_map(cod_imovel, output_png_path, options="all"):
     ax_map.text(sb_x + scale_deg/2.0, sb_y + dy*0.015, scale_label,
                 horizontalalignment='center', fontsize=7, fontweight='bold', color='black', zorder=6)
                 
-    # Side Panel for Info, Legend, Scale, North Arrow
     ax_panel = fig.add_axes([0.75, 0.08, 0.21, 0.84])
-    ax_panel.axis('off')
-    ax_panel.add_patch(plt.Rectangle((0, 0), 1, 1, facecolor='white', edgecolor='black', linewidth=1.2, transform=ax_panel.transAxes))
-    
-    # Logo
-    logo_path = os.path.join(DATA_DIR, "brasao_ubaira.png")
-    if os.path.exists(logo_path):
-        try:
-            logo_img = plt.imread(logo_path)
-            ax_logo = fig.add_axes([0.77, 0.78, 0.17, 0.11])
-            ax_logo.imshow(logo_img)
-            ax_logo.axis('off')
-        except Exception:
-            pass
-            
-    ax_panel.text(0.5, 0.74, "MUNICÍPIO DE UBAÍRA", fontsize=8.5, fontweight='bold', color='#0f172a', ha='center')
-    ax_panel.text(0.5, 0.71, "Secretaria de Meio Ambiente", fontsize=7, color='#475569', ha='center')
-    ax_panel.text(0.5, 0.67, "MAPA DO IMÓVEL RURAL", fontsize=7.5, fontweight='bold', color='#d97706', ha='center')
-    ax_panel.plot([0.05, 0.95], [0.64, 0.64], color='black', linewidth=0.5)
-    
-    # Legend
-    ax_panel.text(0.1, 0.60, "LEGENDA", fontsize=7.5, fontweight='bold', color='#0f172a')
-    
-    legend_items = [
-        ('target', '#d97706', '#fbbf24', 0.2, 'Imóvel Alvo (CAR)', None),
-        ('adj', '#94a3b8', '#e2e8f0', 0.3, 'Imóveis Adjacentes', None)
-    ]
-    if show_veg:
-        legend_items.append(('veg', '#15803d', '#22c55e', 0.35, 'Vegetação Nativa', None))
-    if show_app_rios:
-        legend_items.append(('rio', '#1d4ed8', '#3b82f6', 0.4, 'APP Margem Rio', '//'))
-    if show_app_nas:
-        legend_items.append(('nas', '#0e7490', '#06b6d4', 0.45, 'APP Nascente', None))
-    if show_topo:
-        legend_items.append(('topo', '#cbd5e1', 'none', 0.6, 'Curvas de Nível', None))
-        
-    y_pos = 0.56
-    for item_type, edge_c, fill_c, alpha, label, hatch in legend_items:
-        if fill_c != 'none':
-            rect = plt.Rectangle((0.1, y_pos - 0.012), 0.12, 0.02,
-                                 facecolor=fill_c, edgecolor=edge_c, alpha=alpha, hatch=hatch, linewidth=0.8)
-            ax_panel.add_patch(rect)
-        else:
-            ax_panel.plot([0.1, 0.22], [y_pos - 0.002, y_pos - 0.002], color=edge_c, linewidth=0.8, alpha=alpha)
-        ax_panel.text(0.26, y_pos - 0.005, label, fontsize=7.5, color='#334155', va='center')
-        y_pos -= 0.035
-        
-    ax_panel.plot([0.05, 0.95], [0.26, 0.26], color='black', linewidth=0.5)
-    
-    # Scale calculation
     axes_width_m = W_map * 0.0254
     scale_ratio = ground_width_m / axes_width_m
     scale_text = f"1:{int(round(scale_ratio, -1)):,}".replace(',', '.')
     
-    ax_panel.text(0.5, 0.22, f"Escala: {scale_text}", fontsize=8, fontweight='bold', color='#0f172a', ha='center')
-    ax_panel.text(0.5, 0.18, "Projeção / Datum:", fontsize=7, color='#475569', ha='center')
-    ax_panel.text(0.5, 0.15, "UTM Zona 24S / SIRGAS 2000", fontsize=7, fontweight='bold', color='#334155', ha='center')
-    
-    # North Arrow
-    ax_panel.annotate('N', xy=(0.5, 0.11), xytext=(0.5, 0.05),
-                      arrowprops=dict(facecolor='#0f172a', width=1.5, headwidth=6, shrink=0.05),
-                      horizontalalignment='center', verticalalignment='center',
-                      fontsize=8.5, fontweight='bold', color='#0f172a')
-                      
-    import datetime
-    date_str = datetime.date.today().strftime("%d/%m/%Y")
-    ax_panel.text(0.5, 0.025, f"Data: {date_str} | Fonte: CAR, IBGE, INEMA", fontsize=6, color='#64748b', ha='center')
+    draw_map_side_panel(fig, ax_panel, active_layers, scale_text, "MAPA DO IMÓVEL RURAL", "#d97706", is_geopdf=False)
     
     plt.savefig(output_png_path, dpi=150)
     plt.close()
     return True
 
-def generate_municipal_map(output_png_path, options="all"):
+def generate_municipal_map(output_png_path, options="all", basemap="osm", active_layers=None):
     driver = ogr.GetDriverByName("GeoJSON")
     ds_mun = driver.Open(os.path.join(DATA_DIR, "municipio.geojson"), 0)
     if not ds_mun:
@@ -591,17 +1069,9 @@ def generate_municipal_map(output_png_path, options="all"):
     if not mun_feat:
         return False
         
-    opts = [o.strip() for o in options.split(',')]
-    show_all = "all" in opts or len(opts) == 0 or (len(opts) == 1 and opts[0] == "")
-    show_app_rios = show_all or "app_rios" in opts
-    show_app_nas = show_all or "app_nascente" in opts
-    show_veg = show_all or "vegetacao_nativa" in opts
-    show_topo = show_all or "topografia" in opts
-    
     mun_geom = mun_feat.GetGeometryRef()
     extent = mun_geom.GetEnvelope() # xmin, xmax, ymin, ymax
     
-    # Add buffer
     dx_orig = extent[1] - extent[0]
     dy_orig = extent[3] - extent[2]
     buffer_ratio = 0.05
@@ -612,7 +1082,6 @@ def generate_municipal_map(output_png_path, options="all"):
     dx = xmax - xmin
     dy = ymax - ymin
     
-    # Layout math for 8.5 x 6 inches
     W_fig = 8.5
     H_fig = 6.0
     W_max_map = 5.44
@@ -637,59 +1106,18 @@ def generate_municipal_map(output_png_path, options="all"):
     fig = plt.figure(figsize=(W_fig, H_fig), dpi=150)
     
     ax_map = fig.add_axes([left_frac, bottom_frac, w_frac, h_frac])
-    ax_map.set_xlim(xmin, xmax)
-    ax_map.set_ylim(ymin, ymax)
-    ax_map.set_aspect('equal')
     
-    # 1. Plot Topography (contour lines)
-    if show_topo:
-        try:
-            ds_topo = driver.Open(os.path.join(DATA_DIR, "topografia.geojson"), 0)
-            if ds_topo:
-                layer_topo = ds_topo.GetLayer()
-                for feat in layer_topo:
-                    geom = feat.GetGeometryRef()
-                    if geom:
-                        geom_type = geom.GetGeometryType()
-                        if geom_type in [ogr.wkbLineString, ogr.wkbMultiLineString]:
-                            for i in range(geom.GetGeometryCount()):
-                                line = geom.GetGeometryRef(i)
-                                if line.GetGeometryType() == ogr.wkbLineString:
-                                    pts = [line.GetPoint(j)[:2] for j in range(line.GetPointCount())]
-                                    if len(pts) > 1:
-                                        x, y = zip(*pts)
-                                        ax_map.plot(x, y, color='#cbd5e1', linewidth=0.3, alpha=0.5)
-        except Exception as e:
-            print(f"Error drawing topography contours on municipal map: {e}")
-            
-    # 2. Plot municipality boundary
-    add_geom_to_plot(ax_map, mun_geom, '#ef4444', 'none', alpha=1.0)
+    if active_layers is None:
+        opts = [o.strip() for o in options.split(',')]
+        show_all = "all" in opts or len(opts) == 0 or (len(opts) == 1 and opts[0] == "")
+        active_layers = ['municipio']
+        if show_all or "app_rios" in opts: active_layers.append('app_rios')
+        if show_all or "app_nascente" in opts: active_layers.append('app_nascente')
+        if show_all or "vegetacao_nativa" in opts: active_layers.append('vegetacao_nativa')
+        if show_all or "topografia" in opts: active_layers.append('topografia')
+        
+    plot_all_active_layers(ax_map, xmin, ymin, xmax, ymax, active_layers, basemap=basemap)
     
-    # 3. Plot Native Veg
-    if show_veg:
-        ds_veg = driver.Open(os.path.join(DATA_DIR, "vegetacao_nativa.geojson"), 0)
-        if ds_veg:
-            layer_veg = ds_veg.GetLayer()
-            for feat in layer_veg:
-                add_geom_to_plot(ax_map, feat.GetGeometryRef(), '#15803d', '#22c55e', alpha=0.3)
-            
-    # 4. Plot River APP
-    if show_app_rios:
-        ds_rios = driver.Open(os.path.join(DATA_DIR, "app_rios.geojson"), 0)
-        if ds_rios:
-            layer_rios = ds_rios.GetLayer()
-            for feat in layer_rios:
-                add_geom_to_plot(ax_map, feat.GetGeometryRef(), '#1d4ed8', '#3b82f6', alpha=0.3)
-            
-    # 5. Plot Spring APP
-    if show_app_nas:
-        ds_nas = driver.Open(os.path.join(DATA_DIR, "app_nascente.geojson"), 0)
-        if ds_nas:
-            layer_nas = ds_nas.GetLayer()
-            for feat in layer_nas:
-                add_geom_to_plot(ax_map, feat.GetGeometryRef(), '#0e7490', '#06b6d4', alpha=0.4)
-                
-    # Format coordinate ticks and grids
     ax_map.grid(True, linestyle=':', color='#cbd5e1', linewidth=0.5, alpha=0.8)
     for spine in ax_map.spines.values():
         spine.set_color('black')
@@ -705,8 +1133,6 @@ def generate_municipal_map(output_png_path, options="all"):
     ax_map.yaxis.set_major_formatter(ticker.FuncFormatter(format_lat))
     ax_map.tick_params(axis='both', which='major', labelsize=7.5, colors='#1e293b')
     
-    # Scale Bar (5 km)
-    import math
     lat_mid = (ymin + ymax) / 2.0
     m_per_deg_lon = 111000.0 * math.cos(math.radians(lat_mid))
     ground_width_m = dx * m_per_deg_lon
@@ -729,79 +1155,18 @@ def generate_municipal_map(output_png_path, options="all"):
     ax_map.text(sb_x + scale_deg/2.0, sb_y + dy*0.015, scale_label,
                 horizontalalignment='center', fontsize=7, fontweight='bold', color='black', zorder=6)
                 
-    # Side Panel
     ax_panel = fig.add_axes([0.75, 0.08, 0.21, 0.84])
-    ax_panel.axis('off')
-    ax_panel.add_patch(plt.Rectangle((0, 0), 1, 1, facecolor='white', edgecolor='black', linewidth=1.2, transform=ax_panel.transAxes))
-    
-    # Logo
-    logo_path = os.path.join(DATA_DIR, "brasao_ubaira.png")
-    if os.path.exists(logo_path):
-        try:
-            logo_img = plt.imread(logo_path)
-            ax_logo = fig.add_axes([0.77, 0.78, 0.17, 0.11])
-            ax_logo.imshow(logo_img)
-            ax_logo.axis('off')
-        except Exception:
-            pass
-            
-    ax_panel.text(0.5, 0.74, "MUNICÍPIO DE UBAÍRA", fontsize=8.5, fontweight='bold', color='#0f172a', ha='center')
-    ax_panel.text(0.5, 0.71, "Secretaria de Meio Ambiente", fontsize=7, color='#475569', ha='center')
-    ax_panel.text(0.5, 0.67, "MAPA MUNICIPAL GERAL", fontsize=7.5, fontweight='bold', color='#ef4444', ha='center')
-    ax_panel.plot([0.05, 0.95], [0.64, 0.64], color='black', linewidth=0.5)
-    
-    # Legend
-    ax_panel.text(0.1, 0.60, "LEGENDA", fontsize=7.5, fontweight='bold', color='#0f172a')
-    
-    legend_items = [
-        ('mun', '#ef4444', 'none', 1.0, 'Limite Municipal', None)
-    ]
-    if show_veg:
-        legend_items.append(('veg', '#15803d', '#22c55e', 0.3, 'Vegetação Nativa', None))
-    if show_app_rios:
-        legend_items.append(('rio', '#1d4ed8', '#3b82f6', 0.3, 'APP Margem Rio', None))
-    if show_app_nas:
-        legend_items.append(('nas', '#0e7490', '#06b6d4', 0.4, 'APP Nascente', None))
-    if show_topo:
-        legend_items.append(('topo', '#cbd5e1', 'none', 0.5, 'Curvas de Nível', None))
-        
-    y_pos = 0.56
-    for item_type, edge_c, fill_c, alpha, label, hatch in legend_items:
-        if fill_c != 'none':
-            rect = plt.Rectangle((0.1, y_pos - 0.012), 0.12, 0.02,
-                                 facecolor=fill_c, edgecolor=edge_c, alpha=alpha, hatch=hatch, linewidth=0.8)
-            ax_panel.add_patch(rect)
-        else:
-            ax_panel.plot([0.1, 0.22], [y_pos - 0.002, y_pos - 0.002], color=edge_c, linewidth=0.8, alpha=alpha)
-        ax_panel.text(0.26, y_pos - 0.005, label, fontsize=7.5, color='#334155', va='center')
-        y_pos -= 0.035
-        
-    ax_panel.plot([0.05, 0.95], [0.26, 0.26], color='black', linewidth=0.5)
-    
-    # Scale calculation
     axes_width_m = W_map * 0.0254
     scale_ratio = ground_width_m / axes_width_m
     scale_text = f"1:{int(round(scale_ratio, -2)):,}".replace(',', '.')
     
-    ax_panel.text(0.5, 0.22, f"Escala: {scale_text}", fontsize=8, fontweight='bold', color='#0f172a', ha='center')
-    ax_panel.text(0.5, 0.18, "Projeção / Datum:", fontsize=7, color='#475569', ha='center')
-    ax_panel.text(0.5, 0.15, "UTM Zona 24S / SIRGAS 2000", fontsize=7, fontweight='bold', color='#334155', ha='center')
-    
-    # North Arrow
-    ax_panel.annotate('N', xy=(0.5, 0.11), xytext=(0.5, 0.05),
-                      arrowprops=dict(facecolor='#0f172a', width=1.5, headwidth=6, shrink=0.05),
-                      horizontalalignment='center', verticalalignment='center',
-                      fontsize=8.5, fontweight='bold', color='#0f172a')
-                      
-    import datetime
-    date_str = datetime.date.today().strftime("%d/%m/%Y")
-    ax_panel.text(0.5, 0.025, f"Data: {date_str} | Fonte: CAR, IBGE, INEMA", fontsize=6, color='#64748b', ha='center')
+    draw_map_side_panel(fig, ax_panel, active_layers, scale_text, "MAPA MUNICIPAL GERAL", "#ef4444", is_geopdf=False)
     
     plt.savefig(output_png_path, dpi=150)
     plt.close()
     return True
 
-def generate_report_pdf(type_report, cod_imovel, output_pdf_path, options="all"):
+def generate_report_pdf(type_report, cod_imovel, output_pdf_path, options="all", basemap="osm", active_layers=None):
     doc = SimpleDocTemplate(output_pdf_path, pagesize=A4,
                             rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
     styles = getSampleStyleSheet()
@@ -978,7 +1343,7 @@ def generate_report_pdf(type_report, cod_imovel, output_pdf_path, options="all")
         # Render and Append Municipal Map
         temp_map_png = os.path.join(ROOT_DIR, "scratch", "temp_map_municipal.png")
         os.makedirs(os.path.dirname(temp_map_png), exist_ok=True)
-        if generate_municipal_map(temp_map_png, options):
+        if generate_municipal_map(temp_map_png, options, basemap=basemap, active_layers=active_layers):
             story.append(Spacer(1, 10))
             story.append(Image(temp_map_png, width=480, height=338))
             story.append(Spacer(1, 10))
@@ -1090,7 +1455,7 @@ def generate_report_pdf(type_report, cod_imovel, output_pdf_path, options="all")
         # Render and Append Map with options
         temp_map_png = os.path.join(ROOT_DIR, "scratch", f"temp_map_{cod_imovel.replace('-', '_')}.png")
         os.makedirs(os.path.dirname(temp_map_png), exist_ok=True)
-        if generate_property_map(cod_imovel, temp_map_png, options):
+        if generate_property_map(cod_imovel, temp_map_png, options, basemap=basemap, active_layers=active_layers):
             story.append(Spacer(1, 10))
             story.append(Image(temp_map_png, width=480, height=338))
             story.append(Spacer(1, 10))
@@ -1157,9 +1522,7 @@ def generate_report_pdf(type_report, cod_imovel, output_pdf_path, options="all")
         
     return True
 
-def export_geopdf_map(output_pdf_path, xmin, ymin, xmax, ymax, active_layers):
-    driver = ogr.GetDriverByName("GeoJSON")
-    
+def export_geopdf_map(output_pdf_path, xmin, ymin, xmax, ymax, active_layers, basemap="osm"):
     dx = xmax - xmin
     dy = ymax - ymin
     
@@ -1185,7 +1548,6 @@ def export_geopdf_map(output_pdf_path, xmin, ymin, xmax, ymax, active_layers):
     left_frac = X_center / W_fig
     bottom_frac = Y_center / H_fig
     
-    # Calculate expanded coordinates of the full page (W_fig x H_fig)
     s_x = dx / W_map
     s_y = dy / H_map
     
@@ -1201,82 +1563,11 @@ def export_geopdf_map(output_pdf_path, xmin, ymin, xmax, ymax, active_layers):
     
     fig = plt.figure(figsize=(W_fig, H_fig), dpi=150)
     
-    # Map axis
     ax_map = fig.add_axes([left_frac, bottom_frac, w_frac, h_frac])
-    ax_map.set_xlim(xmin, xmax)
-    ax_map.set_ylim(ymin, ymax)
-    ax_map.set_aspect('equal')
     
-    layer_map = {
-        'municipio': ('municipio.geojson', '#ef4444', 'none', 1.0, None, 2),
-        'distritos': ('distritos.geojson', '#3b82f6', '#93c5fd', 0.15, None, 1),
-        'setores': ('setores.geojson', '#10b981', '#6ee7b7', 0.1, None, 1),
-        'iru': ('iru.geojson', '#d97706', '#fbbf24', 0.15, None, 1),
-        'app_rios': ('app_rios.geojson', '#1d4ed8', '#3b82f6', 0.35, '//', 1),
-        'drenagem': ('drenagem.geojson', '#2563eb', 'none', 1.0, None, 1.5),
-        'app_nascente': ('app_nascente.geojson', '#0e7490', '#06b6d4', 0.45, None, 1),
-        'app_lago_natural': ('app_lago_natural.geojson', '#0284c7', '#38bdf8', 0.4, None, 1),
-        'app_reservatorio': ('app_reservatorio.geojson', '#0369a1', '#0ea5e9', 0.4, None, 1),
-        'app_topo_morro': ('app_topo_morro.geojson', '#b45309', '#f59e0b', 0.3, None, 1),
-        'reserva_legal_proposta': ('reserva_legal_proposta.geojson', '#f97316', '#fdba74', 0.25, None, 1),
-        'reserva_legal_aprovada': ('reserva_legal_aprovada.geojson', '#10b981', '#a7f3d0', 0.25, None, 1),
-        'reserva_legal_averbada': ('reserva_legal_averbada.geojson', '#047857', '#6ee7b7', 0.25, None, 1),
-        'vegetacao_nativa': ('vegetacao_nativa.geojson', '#15803d', '#22c55e', 0.35, None, 1),
-        'urbano_ast': ('urbano_ast.geojson', '#ec4899', '#fbcfe8', 0.3, None, 1),
-        'zona_urbana': ('zona_urbana.geojson', '#64748b', 'none', 0.5, None, 1),
-        'regiao_metropolitana': ('regiao_metropolitana.geojson', '#a855f7', '#c084fc', 0.08, None, 1)
-    }
+    plot_all_active_layers(ax_map, xmin, ymin, xmax, ymax, active_layers, basemap=basemap)
     
-    bg_keys = ['regiao_metropolitana', 'distritos', 'setores', 'iru', 'urbano_ast', 'reserva_legal_proposta', 'reserva_legal_aprovada', 'reserva_legal_averbada', 'vegetacao_nativa', 'app_topo_morro', 'app_lago_natural', 'app_reservatorio', 'app_rios', 'app_nascente']
-    line_keys = ['zona_urbana', 'drenagem', 'municipio']
-    
-    ring = ogr.Geometry(ogr.wkbLinearRing)
-    ring.AddPoint(xmin, ymin)
-    ring.AddPoint(xmax, ymin)
-    ring.AddPoint(xmax, ymax)
-    ring.AddPoint(xmin, ymax)
-    ring.AddPoint(xmin, ymin)
-    bbox_geom = ogr.Geometry(ogr.wkbPolygon)
-    bbox_geom.AddGeometry(ring)
-    
-    def plot_keys(keys_list):
-        for key in keys_list:
-            if key in active_layers and key in layer_map:
-                filename, edge_c, fill_c, alpha, hatch, lw = layer_map[key]
-                filepath = os.path.join(DATA_DIR, filename)
-                if not os.path.exists(filepath):
-                    continue
-                ds = driver.Open(filepath, 0)
-                if not ds:
-                    continue
-                layer = ds.GetLayer()
-                layer.SetSpatialFilter(bbox_geom)
-                for feat in layer:
-                    geom = feat.GetGeometryRef()
-                    if geom:
-                        geom_type = geom.GetGeometryType()
-                        if geom_type in [ogr.wkbLineString, ogr.wkbMultiLineString]:
-                            for i in range(geom.GetGeometryCount()):
-                                line = geom.GetGeometryRef(i)
-                                if line.GetGeometryType() == ogr.wkbLineString:
-                                    pts = [line.GetPoint(j)[:2] for j in range(line.GetPointCount())]
-                                    if len(pts) > 1:
-                                        x, y = zip(*pts)
-                                        ax_map.plot(x, y, color=edge_c, linewidth=lw, alpha=alpha)
-                                else:
-                                    for k in range(line.GetGeometryCount()):
-                                        sub_line = line.GetGeometryRef(k)
-                                        pts = [sub_line.GetPoint(j)[:2] for j in range(sub_line.GetPointCount())]
-                                        if len(pts) > 1:
-                                            x, y = zip(*pts)
-                                            ax_map.plot(x, y, color=edge_c, linewidth=lw, alpha=alpha)
-                        elif geom_type in [ogr.wkbPolygon, ogr.wkbMultiPolygon]:
-                            add_geom_to_plot(ax_map, geom, edge_c, fill_c if fill_c != 'none' else 'none', alpha=alpha, hatch=hatch)
-                            
-    plot_keys(bg_keys)
-    plot_keys(line_keys)
-    
-    # Coordinate ticks and grid lines on borders
+    # Coordinate ticks and neatlines
     ax_map.grid(True, linestyle=':', color='#cbd5e1', linewidth=0.5, alpha=0.8)
     for spine in ax_map.spines.values():
         spine.set_color('black')
@@ -1293,7 +1584,6 @@ def export_geopdf_map(output_pdf_path, xmin, ymin, xmax, ymax, active_layers):
     ax_map.tick_params(axis='both', which='major', labelsize=7.5, colors='#1e293b')
     
     # Graphical Scale Bar inside ax_map
-    import math
     lat_mid = (ymin + ymax) / 2.0
     m_per_deg_lon = 111000.0 * math.cos(math.radians(lat_mid))
     ground_width_m = dx * m_per_deg_lon
@@ -1328,84 +1618,11 @@ def export_geopdf_map(output_pdf_path, xmin, ymin, xmax, ymax, active_layers):
                 
     # Side Panel
     ax_panel = fig.add_axes([0.76, 0.08, 0.20, 0.84])
-    ax_panel.axis('off')
-    ax_panel.add_patch(plt.Rectangle((0, 0), 1, 1, facecolor='white', edgecolor='black', linewidth=1.2, transform=ax_panel.transAxes))
-    
-    # Logo
-    logo_path = os.path.join(DATA_DIR, "brasao_ubaira.png")
-    if os.path.exists(logo_path):
-        try:
-            logo_img = plt.imread(logo_path)
-            ax_logo = fig.add_axes([0.78, 0.78, 0.16, 0.11])
-            ax_logo.imshow(logo_img)
-            ax_logo.axis('off')
-        except Exception:
-            pass
-            
-    ax_panel.text(0.5, 0.74, "MUNICÍPIO DE UBAÍRA", fontsize=8.5, fontweight='bold', color='#0f172a', ha='center')
-    ax_panel.text(0.5, 0.71, "Secretaria de Meio Ambiente", fontsize=7, color='#475569', ha='center')
-    ax_panel.text(0.5, 0.67, "MAPA GEORREFERENCIADO", fontsize=7.5, fontweight='bold', color='#1d4ed8', ha='center')
-    ax_panel.plot([0.05, 0.95], [0.64, 0.64], color='black', linewidth=0.5)
-    
-    # Legend
-    ax_panel.text(0.1, 0.60, "LEGENDA", fontsize=7.5, fontweight='bold', color='#0f172a')
-    
-    layer_labels = {
-        'municipio': 'Limite Municipal',
-        'distritos': 'Limites Distritais',
-        'setores': 'Setores Censitários',
-        'iru': 'Imóveis Rurais (CAR)',
-        'app_rios': 'APP Margem Rio',
-        'drenagem': 'Redes de Rios',
-        'app_nascente': 'APP Nascente',
-        'app_lago_natural': 'APP Lago Natural',
-        'app_reservatorio': 'APP Reservatório',
-        'app_topo_morro': 'APP Topo de Morro',
-        'reserva_legal_proposta': 'RL Proposta',
-        'reserva_legal_aprovada': 'RL Aprovada',
-        'reserva_legal_averbada': 'RL Averbada',
-        'vegetacao_nativa': 'Vegetação Nativa',
-        'urbano_ast': 'Assentamentos (AST)',
-        'zona_urbana': 'Zonas Urbanas',
-        'regiao_metropolitana': 'Região Metropolitana'
-    }
-    
-    y_pos = 0.56
-    for key in active_layers:
-        if key in layer_map:
-            filename, edge_c, fill_c, alpha, hatch, lw = layer_map[key]
-            lbl = layer_labels.get(key, key)
-            if fill_c != 'none':
-                rect = plt.Rectangle((0.1, y_pos - 0.012), 0.12, 0.02,
-                                     facecolor=fill_c, edgecolor=edge_c, alpha=alpha, hatch=hatch, linewidth=0.8)
-                ax_panel.add_patch(rect)
-            else:
-                ax_panel.plot([0.1, 0.22], [y_pos - 0.002, y_pos - 0.002], color=edge_c, linewidth=lw, alpha=alpha)
-            ax_panel.text(0.26, y_pos - 0.005, lbl, fontsize=7.5, color='#334155', va='center')
-            y_pos -= 0.032
-            if y_pos < 0.28:
-                break
-                
-    ax_panel.plot([0.05, 0.95], [0.26, 0.26], color='black', linewidth=0.5)
-    
-    # Scale calculation
     axes_width_m = W_map * 0.0254
     scale_ratio = ground_width_m / axes_width_m
     scale_text = f"1:{int(round(scale_ratio, -1)):,}".replace(',', '.')
     
-    ax_panel.text(0.5, 0.22, f"Escala: {scale_text}", fontsize=8, fontweight='bold', color='#0f172a', ha='center')
-    ax_panel.text(0.5, 0.18, "Projeção / Datum:", fontsize=7, color='#475569', ha='center')
-    ax_panel.text(0.5, 0.15, "UTM Zona 24S / SIRGAS 2000", fontsize=7, fontweight='bold', color='#334155', ha='center')
-    
-    # North Arrow
-    ax_panel.annotate('N', xy=(0.5, 0.11), xytext=(0.5, 0.05),
-                      arrowprops=dict(facecolor='#0f172a', width=1.5, headwidth=6, shrink=0.05),
-                      horizontalalignment='center', verticalalignment='center',
-                      fontsize=8.5, fontweight='bold', color='#0f172a')
-                      
-    import datetime
-    date_str = datetime.date.today().strftime("%d/%m/%Y")
-    ax_panel.text(0.5, 0.025, f"Data: {date_str} | Fonte: CAR, IBGE, INEMA", fontsize=6, color='#64748b', ha='center')
+    draw_map_side_panel(fig, ax_panel, active_layers, scale_text, "MAPA GEORREFERENCIADO", "#1d4ed8", is_geopdf=True)
     
     temp_png_path = os.path.join(ROOT_DIR, "scratch", f"temp_export_{int(xmin*10000)}_{int(ymin*10000)}.png")
     os.makedirs(os.path.dirname(temp_png_path), exist_ok=True)

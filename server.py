@@ -69,12 +69,13 @@ class GeoPortalHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 xmax = float(params.get('xmax'))
                 ymax = float(params.get('ymax'))
                 active_layers = list(params.get('layers', []))
+                basemap = params.get('basemap', 'osm')
                 
                 pdf_filename = "mapa_georreferenciado_ubaira.pdf"
                 pdf_path = os.path.join(ROOT_DIR, "scratch", pdf_filename)
                 os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
                 
-                success = report_generator.export_geopdf_map(pdf_path, xmin, ymin, xmax, ymax, active_layers)
+                success = report_generator.export_geopdf_map(pdf_path, xmin, ymin, xmax, ymax, active_layers, basemap=basemap)
                 
                 if success and os.path.exists(pdf_path):
                     with open(pdf_path, 'rb') as f:
@@ -114,6 +115,9 @@ class GeoPortalHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 
                 # Active options (defaults if not specified)
                 options = query_params.get('options', ['all'])[0]
+                basemap = query_params.get('basemap', ['osm'])[0]
+                active_layers_str = query_params.get('active_layers', [''])[0]
+                active_layers = [l.strip() for l in active_layers_str.split(',') if l.strip()]
                 
                 if type_report == "municipal":
                     pdf_filename = "relatorio_geral_ubaira.pdf"
@@ -124,7 +128,10 @@ class GeoPortalHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 pdf_path = os.path.join(ROOT_DIR, "scratch", pdf_filename)
                 os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
                 
-                success = report_generator.generate_report_pdf(type_report, cod_imovel, pdf_path, options)
+                success = report_generator.generate_report_pdf(
+                    type_report, cod_imovel, pdf_path, options,
+                    basemap=basemap, active_layers=active_layers
+                )
                 
                 if success and os.path.exists(pdf_path):
                     with open(pdf_path, 'rb') as f:
