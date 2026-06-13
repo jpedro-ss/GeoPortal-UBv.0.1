@@ -137,8 +137,26 @@
                     <!-- Dynamic Layer Items -->
                 </div>
             </div>
+            <!-- Category: Ferramentas e Relatórios -->
+            <div class="layer-category">
+                <div class="layer-category-title">
+                    <i class="fa-solid fa-screwdriver-wrench"></i> Ferramentas e Relatórios
+                </div>
+                <div class="tools-panel" style="display: flex; flex-direction: column; gap: 8px; padding: 10px 0;">
+                    <button class="tool-btn" id="btn-export-geopdf" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--primary); background: rgba(59,130,246,0.15); color: white; cursor: pointer; text-align: left; display: flex; align-items: center; gap: 8px; font-size: 0.75rem; transition: all 0.2s;">
+                        <i class="fa-solid fa-file-pdf" style="color: var(--warning);"></i> Exportar mapa
+                    </button>
+                    <button class="tool-btn" id="btn-municipal-report" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--primary); background: rgba(59,130,246,0.15); color: white; cursor: pointer; text-align: left; display: flex; align-items: center; gap: 8px; font-size: 0.75rem; transition: all 0.2s;">
+                        <i class="fa-solid fa-file-invoice" style="color: var(--warning);"></i> Gerar Relatório
+                    </button>
+                    <button class="tool-btn" id="btn-update-data" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--primary); background: rgba(59,130,246,0.15); color: white; cursor: pointer; text-align: left; display: flex; align-items: center; gap: 8px; font-size: 0.75rem; transition: all 0.2s;">
+                        <i class="fa-solid fa-arrows-rotate" style="color: var(--warning);"></i> Sincronizar Dados (IBGE/CAR)
+                    </button>
+                </div>
+            </div>
 
         </div>
+
     </div>
 
     <!-- Right Sidebar: Statistics & Dashboard -->
@@ -374,6 +392,9 @@
                 </div>
             </div>
             <div class="drawer-actions">
+                <button class="drawer-btn" id="btn-property-report" style="display: none; background: rgba(16, 185, 129, 0.2); border-color: #10b981; margin-right: 6px;">
+                    <i class="fa-solid fa-file-pdf"></i> Relatório PDF
+                </button>
                 <button class="drawer-btn" id="btn-export-csv">
                     <i class="fa-solid fa-file-csv"></i> Exportar CSV
                 </button>
@@ -448,6 +469,28 @@
             <i class="fa-solid fa-circle-info"></i>
             <span>Sobre</span>
         </button>
+    </div>
+
+    <!-- Tools Modal for Sincronização / Exportações / Relatórios -->
+    <div class="modal-overlay" id="tools-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(2, 6, 23, 0.65); backdrop-filter: blur(4px); z-index: 9999; align-items: center; justify-content: center;">
+        <div class="modal-card glass-panel" style="background: rgba(8, 22, 42, 0.95); border: 1px solid var(--primary); border-radius: 8px; width: 90%; max-width: 450px; padding: 20px; box-shadow: 0 8px 32px 0 rgba(0,0,0,0.5);">
+            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; margin-bottom: 15px;">
+                <h3 id="modal-title" style="margin: 0; color: white; display: flex; align-items: center; gap: 8px; font-size: 1.05rem;"><i class="fa-solid fa-gear text-warning"></i> Processando</h3>
+                <button class="modal-close-btn" id="btn-close-modal" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1.1rem; transition: color 0.2s;"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" id="modal-content" style="display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; color: var(--text-secondary); font-size: 0.85rem;">
+                <div class="spinner-container" id="modal-spinner" style="font-size: 2rem; color: var(--warning);">
+                    <i class="fa-solid fa-circle-notch fa-spin"></i>
+                </div>
+                <p id="modal-status-text" style="margin: 0; font-weight: bold; color: white;">Aguarde, processando requisição...</p>
+                <div class="progress-bar-container" id="modal-progress-container" style="display: none; width: 100%; background: rgba(255,255,255,0.1); height: 8px; border-radius: 4px; overflow: hidden; margin-top: 10px;">
+                    <div class="progress-bar-fill" id="modal-progress-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--primary), var(--warning)); transition: width 0.3s;"></div>
+                </div>
+                <div id="modal-results-container" style="display: none; margin-top: 15px; width: 100%; text-align: left; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">
+                    <!-- Results or Download buttons inject here -->
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Glassmorphic Footer Panel (Incorporating Municipal Logo) -->

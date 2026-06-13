@@ -1003,6 +1003,9 @@ function setupUIEvents() {
             }
         });
     });
+    
+    // Initialize Advanced Tools & Modal Events
+    initTools();
 }
 
 // Display selected Layer in Attribute Table
@@ -1011,6 +1014,10 @@ function showLayerInAttributeTable(layerId) {
     if (!layerState || !layerState.geoJSONData) return;
 
     state.activeTableLayerId = layerId;
+    state.selectedFeatureIndex = null;
+    
+    const btnPropReport = document.getElementById('btn-property-report');
+    if (btnPropReport) btnPropReport.style.display = 'none';
     
     const drawer = document.getElementById('attributes-drawer');
     drawer.classList.add('open');
@@ -1085,6 +1092,18 @@ function filterAttributeTable(query) {
 function highlightAndFocusFeature(layerId, featureIndex) {
     const layerState = state.layers.find(l => l.id === layerId);
     if (!layerState || !layerState.layerObject) return;
+
+    state.selectedFeatureIndex = featureIndex;
+    
+    // Toggle Report PDF button visibility in the attributes drawer
+    const btnPropReport = document.getElementById('btn-property-report');
+    if (btnPropReport) {
+        if (layerId === 'iru' && featureIndex !== null) {
+            btnPropReport.style.display = 'inline-flex';
+        } else {
+            btnPropReport.style.display = 'none';
+        }
+    }
 
     if (state.highlightedFeature) {
         state.map.removeLayer(state.highlightedFeature);
@@ -1274,3 +1293,310 @@ function updateDashboardStats() {
     const elSlopeMean = document.getElementById('stat-slope-mean');
     if (elSlopeMean) elSlopeMean.innerText = '28.6%';
 }
+
+// Advanced Tools & Report Client Logic
+const apiBase = window.location.protocol === 'file:' ? 'http://localhost:8080' : '';
+
+function showModal(title, text, showSpinner, showProgress, resultsHTML) {
+    const modal = document.getElementById('tools-modal');
+    document.getElementById('modal-title').innerHTML = title;
+    document.getElementById('modal-status-text').innerHTML = text;
+    
+    document.getElementById('modal-spinner').style.display = showSpinner ? 'block' : 'none';
+    document.getElementById('modal-progress-container').style.display = showProgress ? 'block' : 'none';
+    
+    const resultsContainer = document.getElementById('modal-results-container');
+    if (resultsHTML) {
+        resultsContainer.innerHTML = resultsHTML;
+        resultsContainer.style.display = 'block';
+    } else {
+        resultsContainer.style.display = 'none';
+    }
+    
+    modal.style.display = 'flex';
+}
+
+function initTools() {
+    // Modal Close
+    document.getElementById('btn-close-modal').addEventListener('click', () => {
+        document.getElementById('tools-modal').style.display = 'none';
+    });
+    
+    // Close modal on escape key
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            document.getElementById('tools-modal').style.display = 'none';
+        }
+    });
+
+    // 1. Sync Data (Sincronizar Dados)
+    document.getElementById('btn-update-data').addEventListener('click', () => {
+        showModal(
+            "<i class='fa-solid fa-arrows-rotate fa-spin'></i> Sincronizando Dados",
+            "Conectando aos servidores do IBGE e SICAR (INEMA)...<br/>Limpando codificações das tabelas de atributos locais...",
+            true, false, null
+        );
+        
+        fetch(`${apiBase}/api/update_data`, { method: 'POST' })
+            .then(response => {
+                if (!response.ok) throw new Error("Serviço de sincronização respondeu com erro.");
+                return response.json();
+            })
+            .then(data => {
+                let html = `
+                    <div style="color:#10b981;font-weight:600;margin-bottom:8px;">✓ Sincronização concluída com sucesso!</div>
+                    <div style="margin-bottom: 4px;">• Arquivos GeoJSON limpos: <b>${data.cleaned_files}</b></div>
+                    <div style="margin-bottom: 4px;">• População IBGE Ubaíra: <b>${data.ibge.populacao.toLocaleString('pt-BR')} hab</b></div>
+                    <div style="margin-bottom: 12px; font-size:0.75rem; color:var(--text-secondary);">• Status da Conexão: <i>Uso de dados locais consolidados</i></div>
+                    <button class="result-btn" onclick="document.getElementById('tools-modal').style.display='none'">Fechar</button>
+                `;
+                showModal(
+                    "<i class='fa-solid fa-check-double' style='color:#10b981;'></i> Sucesso!",
+                    "A base de dados do GeoPortal foi sincronizada e limpa com êxito.",
+                    false, false, html
+                );
+                
+                // Dynamically update UI statistics if population was updated
+                const elPop = document.getElementById('stat-pop');
+                if (elPop && data.ibge) {
+                    elPop.innerText = data.ibge.populacao.toLocaleString('pt-BR');
+                }
+                const elDensity = document.getElementById('stat-density');
+                if (elDensity && data.ibge) {
+                    elDensity.innerText = data.ibge.densidade.toLocaleString('pt-BR').replace('.', ',');
+                }
+            })
+            .catch(error => {
+                showModal(
+                    "<i class='fa-solid fa-triangle-exclamation' style='color:var(--danger);'></i> Falha na Sincronização",
+                    `Ocorreu um erro no pipeline de atualização:<br/><span style="color:var(--danger);">${error.message}</span>`,
+                    false, false,
+                    `<button class="result-btn secondary" onclick="document.getElementById('tools-modal').style.display='none'">Voltar</button>`
+                );
+            });
+    });
+
+    // 2. Export Municipal Report (Based on active layers in the elements sidebar)
+    document.getElementById('btn-municipal-report').addEventListener('click', () => {
+        const options = [];
+        
+        // Check active layers in the WebGIS sidebar ("aba de elementos")
+        const isRiosActive = state.layers.find(l => l.id === 'app_rios')?.visible || false;
+        const isNascenteActive = state.layers.find(l => l.id === 'app_nascente')?.visible || false;
+        const isVegActive = state.layers.find(l => l.id === 'vegetacao_nativa')?.visible || false;
+        const isTopoActive = state.layers.find(l => l.id === 'topografia')?.visible || false;
+        const isCensoActive = state.layers.find(l => l.id === 'setores')?.visible || 
+                              state.layers.find(l => l.id === 'setores_populacao')?.visible || 
+                              state.layers.find(l => l.id === 'calor_populacional')?.visible || false;
+        
+        // Cadastral data is included if census layers are checked or if no other options are active
+        if (isCensoActive || (!isRiosActive && !isNascenteActive && !isVegActive && !isTopoActive)) {
+            options.push('cadastral');
+        }
+        if (isRiosActive) options.push('app_rios');
+        if (isNascenteActive) options.push('app_nascente');
+        if (isVegActive) options.push('vegetacao_nativa');
+        if (isTopoActive) options.push('topografia');
+        
+        if (options.length === 0) {
+            options.push('cadastral');
+        }
+        
+        const activeLabels = [];
+        if (options.includes('cadastral')) activeLabels.push('Dados IBGE');
+        if (options.includes('app_rios')) activeLabels.push('APP Rios');
+        if (options.includes('app_nascente')) activeLabels.push('APP Nascentes');
+        if (options.includes('vegetacao_nativa')) activeLabels.push('Vegetação Nativa');
+        if (options.includes('topografia')) activeLabels.push('Topografia');
+        
+        showModal(
+            "<i class='fa-solid fa-file-pdf'></i> Gerando Relatório do Município",
+            `Gerando relatório técnico geral com base nos elementos selecionados na aba de elementos:<br/><b>${activeLabels.join(', ')}</b><br/><br/>Processando base de dados geoespaciais...`,
+            true, false, null
+        );
+        
+        fetch(`${apiBase}/api/generate_report?type=municipal&options=${options.join(',')}`)
+            .then(response => {
+                if (!response.ok) throw new Error("Erro ao gerar relatório do município. Verifique se o servidor local está rodando.");
+                return response.blob();
+            })
+            .then(blob => {
+                const downloadUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = "relatorio_geral_ubaira.pdf";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(downloadUrl);
+                
+                showModal(
+                    "<i class='fa-solid fa-check-double' style='color:#10b981;'></i> Relatório Concluído",
+                    "O Relatório Técnico Geral de Ubaíra foi baixado com sucesso!",
+                    false, false,
+                    `<button class="result-btn" onclick="document.getElementById('tools-modal').style.display='none'">Fechar</button>`
+                );
+            })
+            .catch(error => {
+                showModal(
+                    "<i class='fa-solid fa-triangle-exclamation' style='color:var(--danger);'></i> Erro no Relatório",
+                    error.message,
+                    false, false,
+                    `<button class="result-btn secondary" onclick="document.getElementById('tools-modal').style.display='none'">Voltar</button>`
+                );
+            });
+    });
+
+    // 3. Export map (Exportar mapa georreferenciado)
+    document.getElementById('btn-export-geopdf').addEventListener('click', () => {
+        const bounds = state.map.getBounds();
+        const activeLayers = state.layers
+            .filter(l => state.map.hasLayer(l.layerObject) || l.visible)
+            .map(l => l.id);
+            
+        showModal(
+            "<i class='fa-solid fa-map-location-dot'></i> Exportando Mapa Georreferenciado",
+            "Processando camadas ativas e incorporando tags de georreferenciamento no PDF...<br/>O mapa gerado poderá ser carregado em qualquer aplicativo ou software de navegação e orientação em campo offline (Avenza Maps, Locus Map, QGIS, etc.).",
+            true, false, null
+        );
+        
+        const payload = {
+            xmin: bounds.getWest(),
+            ymin: bounds.getSouth(),
+            xmax: bounds.getEast(),
+            ymax: bounds.getNorth(),
+            layers: activeLayers
+        };
+        
+        fetch(`${apiBase}/api/export_geopdf`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(response => {
+            if (!response.ok) throw new Error("Erro na geração do mapa georreferenciado. Verifique se o servidor local está ativo.");
+            return response.blob();
+        })
+        .then(blob => {
+            const downloadUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = "mapa_georreferenciado_ubaira.pdf";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(downloadUrl);
+            
+            showModal(
+                "<i class='fa-solid fa-check-double' style='color:#10b981;'></i> Exportação Concluída",
+                "O mapa georreferenciado foi exportado com sucesso! Transfira o arquivo para seu dispositivo para navegação em campo offline.",
+                false, false,
+                `<button class="result-btn" onclick="document.getElementById('tools-modal').style.display='none'">Fechar</button>`
+            );
+        })
+        .catch(error => {
+            showModal(
+                "<i class='fa-solid fa-triangle-exclamation' style='color:var(--danger);'></i> Falha na Exportação",
+                error.message,
+                false, false,
+                `<button class="result-btn secondary" onclick="document.getElementById('tools-modal').style.display='none'">Voltar</button>`
+            );
+        });
+    });
+
+    // 4. Attribute Table Property Report Click
+    document.getElementById('btn-property-report').addEventListener('click', () => {
+        if (state.activeTableLayerId === 'iru' && state.selectedFeatureIndex !== null && state.selectedFeatureIndex !== undefined) {
+            const layerState = state.layers.find(l => l.id === state.activeTableLayerId);
+            if (layerState && layerState.geoJSONData) {
+                const feature = layerState.geoJSONData.features[state.selectedFeatureIndex];
+                if (feature && feature.properties.cod_imovel) {
+                    window.downloadPropertyReport(feature.properties.cod_imovel);
+                }
+            }
+        }
+    });
+}
+
+// Bind to window to allow Leaflet Popups to trigger it
+window.downloadPropertyReport = function(cod_imovel) {
+    let html = `
+        <div style="text-align: left; width: 100%; margin-bottom: 15px;">
+            <p style="margin-bottom: 10px; font-weight: bold; color: white;">Selecione os elementos de interesse para o Relatório do Imóvel:</p>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: white;">
+                    <input type="checkbox" id="prop-opt-cadas" checked style="cursor: pointer;"> Dados do Cadastro CAR
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: white;">
+                    <input type="checkbox" id="prop-opt-rios" checked style="cursor: pointer;"> Áreas de Preservação de Rios (APP)
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: white;">
+                    <input type="checkbox" id="prop-opt-nas" checked style="cursor: pointer;"> Áreas de Proteção de Nascentes (APP)
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: white;">
+                    <input type="checkbox" id="prop-opt-veg" checked style="cursor: pointer;"> Cobertura de Vegetação Nativa
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: white;">
+                    <input type="checkbox" id="prop-opt-topo" checked style="cursor: pointer;"> Curvas de Nível e Topografia
+                </label>
+            </div>
+        </div>
+        <button class="result-btn" id="btn-submit-property-report"><i class="fa-solid fa-file-pdf"></i> Baixar Relatório do Imóvel</button>
+        <button class="result-btn secondary" onclick="document.getElementById('tools-modal').style.display='none'">Cancelar</button>
+    `;
+    
+    showModal(
+        "<i class='fa-solid fa-file-pdf'></i> Configurar Relatório do Imóvel",
+        `Imóvel rural selecionado: <b>${cod_imovel}</b>`,
+        false, false, html
+    );
+    
+    // Bind click to execute download
+    document.getElementById('btn-submit-property-report').addEventListener('click', () => {
+        const options = [];
+        if (document.getElementById('prop-opt-cadas').checked) options.push('cadastral');
+        if (document.getElementById('prop-opt-rios').checked) options.push('app_rios');
+        if (document.getElementById('prop-opt-nas').checked) options.push('app_nascente');
+        if (document.getElementById('prop-opt-veg').checked) options.push('vegetacao_nativa');
+        if (document.getElementById('prop-opt-topo').checked) options.push('topografia');
+        
+        showModal(
+            "<i class='fa-solid fa-file-pdf'></i> Compilando Relatório do Imóvel",
+            "Intersecionando polígono com curvas de nível, rios e vegetação...<br/>Gerando layout final com mapa e métricas.",
+            true, false, null
+        );
+        
+        fetch(`${apiBase}/api/generate_report?type=property&cod_imovel=${encodeURIComponent(cod_imovel)}&options=${options.join(',')}`)
+            .then(response => {
+                if (!response.ok) throw new Error("Erro ao compilar o relatório do imóvel rural.");
+                return response.blob();
+            })
+            .then(blob => {
+                const downloadUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = `relatorio_ambiental_${cod_imovel.replace(/-/g, '_')}.pdf`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(downloadUrl);
+                
+                showModal(
+                    "<i class='fa-solid fa-check-double' style='color:#10b981;'></i> Relatório Concluído",
+                    "O relatório técnico ambiental do imóvel rural foi baixado com sucesso!",
+                    false, false,
+                    `<button class="result-btn" onclick="document.getElementById('tools-modal').style.display='none'">Fechar</button>`
+                );
+            })
+            .catch(error => {
+                showModal(
+                    "<i class='fa-solid fa-triangle-exclamation' style='color:var(--danger);'></i> Erro na Geração",
+                    error.message,
+                    false, false,
+                    `<button class="result-btn secondary" onclick="document.getElementById('tools-modal').style.display='none'">Voltar</button>`
+                );
+            });
+    });
+};
+
+

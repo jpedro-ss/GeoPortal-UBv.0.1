@@ -8,3 +8,6 @@ Acesso_urbano/
 Thumbs.db
 *.tmp
 *.log
+__pycache__/
+scratch/
+*.pdf

@@ -1136,4 +1136,55 @@ table.attribute-table tr:hover td {
     }
 }
 
+/* Styling for Advanced Tools Panel */
+.tool-btn:hover {
+    background: rgba(59, 130, 246, 0.3) !important;
+    border-color: var(--warning) !important;
+    box-shadow: 0 0 10px rgba(255, 205, 0, 0.2);
+    transform: translateY(-1px);
+}
+
+.tool-btn:active {
+    transform: translateY(1px);
+}
+
+.modal-close-btn:hover {
+    color: white !important;
+}
+
+.result-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--primary);
+    color: white;
+    border: 1px solid var(--border-glow);
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: var(--transition-fast);
+    text-decoration: none;
+    justify-content: center;
+    width: 100%;
+    margin-top: 10px;
+}
+
+.result-btn:hover {
+    background: var(--primary-hover);
+    border-color: var(--warning);
+    box-shadow: 0 0 10px rgba(59,130,246,0.3);
+}
+
+.result-btn.secondary {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.15);
+}
+
+.result-btn.secondary:hover {
+    background: rgba(255,255,255,0.15);
+}
+
+
 
