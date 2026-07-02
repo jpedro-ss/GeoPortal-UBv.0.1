@@ -46,7 +46,7 @@ const LAYER_CONFIGS = [
         category: 'urbano',
         type: 'vector',
         url: 'data/regiao_metropolitana.geojson',
-        visible: false,
+        visible: true,
         style: {
             color: '#a855f7',
             weight: 2,
@@ -217,7 +217,7 @@ const LAYER_CONFIGS = [
         category: 'ambiental',
         type: 'vector',
         url: 'data/vegetacao_nativa.geojson',
-        visible: true,
+        visible: false,
         style: {
             color: '#15803d',
             weight: 1,
@@ -249,7 +249,7 @@ const LAYER_CONFIGS = [
         category: 'ambiental',
         type: 'vector',
         url: 'data/drenagem.geojson',
-        visible: true,
+        visible: false,
         style: {
             color: '#3b82f6',
             weight: 2
@@ -669,6 +669,35 @@ function buildLayerTree() {
     });
 }
 
+// Hash function matching report_generator.py to calculate deterministic densities
+function getDeterministicDensity(cdSetor, situacao) {
+    let h = 0;
+    const str = String(cdSetor);
+    for (let i = 0; i < str.length; i++) {
+        h = (h * 31 + str.charCodeAt(i)) & 0xffffffff;
+    }
+    const unsignedH = h >>> 0;
+    const randVal = (unsignedH % 10000) / 10000.0;
+    if (situacao === 'Urbana') {
+        return Math.round(180 + randVal * 320);
+    } else {
+        return Math.round(5 + randVal * 20);
+    }
+}
+
+// Seedable pseudo-random number generator for stable spatial distributions
+function createSeedableRandom(seedString) {
+    let h = 0;
+    for (let i = 0; i < seedString.length; i++) {
+        h = (h * 31 + seedString.charCodeAt(i)) & 0xffffffff;
+    }
+    let seed = h >>> 0;
+    return function() {
+        seed = (seed * 1664525 + 1013904223) % 4294967296;
+        return seed / 4294967296;
+    };
+}
+
 // Load all GeoJSON and Rasters
 // Load a single layer lazily from the server
 async function loadSingleLayer(layerState) {
@@ -696,15 +725,11 @@ async function loadSingleLayer(layerState) {
             layerState.geoJSONData = data;
             
             if (layerState.id === 'setores_populacao') {
-                // Load dynamic sector demographics
+                // Load dynamic sector demographics (deterministic and stable)
                 data.features.forEach(feat => {
                     if (feat.properties.Densidade === undefined) {
                         const sit = feat.properties.SITUACAO;
-                        if (sit === 'Urbana') {
-                            feat.properties.Densidade = Math.round(180 + Math.random() * 320);
-                        } else {
-                            feat.properties.Densidade = Math.round(5 + Math.random() * 20);
-                        }
+                        feat.properties.Densidade = getDeterministicDensity(feat.properties.CD_SETOR, sit);
                     }
                 });
 
@@ -858,11 +883,14 @@ async function loadAllLayers() {
 }
 
 // Generate heatmap points from sectors
+// Generate heatmap points from sectors (deterministic and stable)
 function buildPopulationHeatmapPoints(secteursGeoJSON) {
     state.heatmapPoints = [];
     
     secteursGeoJSON.features.forEach(feat => {
         const sit = feat.properties.SITUACAO;
+        const cdSetor = feat.properties.CD_SETOR || 'default';
+        const rand = createSeedableRandom(cdSetor);
         let latSum = 0, lngSum = 0, ptCount = 0;
         
         const processCoords = (coords) => {
@@ -887,16 +915,16 @@ function buildPopulationHeatmapPoints(secteursGeoJSON) {
             
             if (sit === 'Urbana') {
                 for (let i = 0; i < 35; i++) {
-                    const rLat = centroidLat + (Math.random() - 0.5) * 0.005;
-                    const rLng = centroidLng + (Math.random() - 0.5) * 0.005;
-                    const weight = 0.5 + Math.random() * 0.5;
+                    const rLat = centroidLat + (rand() - 0.5) * 0.005;
+                    const rLng = centroidLng + (rand() - 0.5) * 0.005;
+                    const weight = 0.5 + rand() * 0.5;
                     state.heatmapPoints.push([rLat, rLng, weight]);
                 }
             } else {
                 for (let i = 0; i < 4; i++) {
-                    const rLat = centroidLat + (Math.random() - 0.5) * 0.015;
-                    const rLng = centroidLng + (Math.random() - 0.5) * 0.015;
-                    const weight = 0.15 + Math.random() * 0.15;
+                    const rLat = centroidLat + (rand() - 0.5) * 0.015;
+                    const rLng = centroidLng + (rand() - 0.5) * 0.015;
+                    const weight = 0.15 + rand() * 0.15;
                     state.heatmapPoints.push([rLat, rLng, weight]);
                 }
             }
