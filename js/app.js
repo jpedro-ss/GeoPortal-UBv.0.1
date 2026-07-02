@@ -808,15 +808,24 @@ async function loadSingleLayer(layerState) {
             });
         } else if (layerState.type === 'heatmap') {
             const buildLayer = state.layers.find(l => l.id === 'construcoes_precisas');
+            const sectorsLayer = state.layers.find(l => l.id === 'setores');
+            
+            // Load sectors data to classify building weights
+            if (sectorsLayer && !sectorsLayer.layerObject) {
+                await loadSingleLayer(sectorsLayer);
+            }
+            
+            // Load building locations
             if (buildLayer && !buildLayer.layerObject) {
                 await loadSingleLayer(buildLayer);
             }
+            
             layerState.layerObject = {
                 addTo: (map) => {
                     if (state.heatmapPoints.length > 0) {
                         state.heatmapLayer = L.heatLayer(state.heatmapPoints, {
-                            radius: 18,
-                            blur: 12,
+                            radius: 12,
+                            blur: 8,
                             maxZoom: 16,
                             gradient: {0.4: 'blue', 0.6: 'cyan', 0.7: 'lime', 0.8: 'yellow', 1.0: 'red'}
                         }).addTo(map);
@@ -884,21 +893,102 @@ async function loadAllLayers() {
     }
 }
 
-// Generate heatmap points from sectors
-// Generate heatmap points from sectors (deterministic and stable)
-// Generate heatmap points from precise buildings (deterministic and stable)
+// Check if a point (lat, lng) is inside a GeoJSON Polygon or MultiPolygon coordinate structure
+function isPointInGeoJSONGeometry(lat, lng, geom) {
+    const pt = [lng, lat]; // GeoJSON is [Lng, Lat]
+    
+    const pointInPolygon = (p, vs) => {
+        const x = p[0], y = p[1];
+        let inside = false;
+        for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+            const xi = vs[i][0], yi = vs[i][1];
+            const xj = vs[j][0], yj = vs[j][1];
+            const intersect = ((yi > y) !== (yj > y))
+                && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    };
+
+    if (geom.type === 'Polygon') {
+        return pointInPolygon(pt, geom.coordinates[0]);
+    } else if (geom.type === 'MultiPolygon') {
+        for (let poly of geom.coordinates) {
+            if (pointInPolygon(pt, poly[0])) return true;
+        }
+    }
+    return false;
+}
+
+// Generate heatmap points from precise buildings with sector-based weights (deterministic and stable)
 function buildHeatmapPointsFromBuildings(buildingsGeoJSON) {
     state.heatmapPoints = [];
+    
+    // Find sectors layer data
+    const sectorsLayer = state.layers.find(l => l.id === 'setores');
+    const sectorsData = sectorsLayer ? sectorsLayer.geoJSONData : null;
+    
+    // Precalculate sectors bounding boxes to speed up spatial queries
+    const sectors = [];
+    if (sectorsData) {
+        sectorsData.features.forEach(feat => {
+            if (feat.geometry && feat.geometry.coordinates) {
+                const geom = feat.geometry;
+                const sit = feat.properties.SITUACAO;
+                
+                // Get bbox of sector
+                let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+                const processCoords = (coords) => {
+                    coords.forEach(coord => {
+                        if (Array.isArray(coord[0])) {
+                            processCoords(coord);
+                        } else {
+                            const x = coord[0], y = coord[1];
+                            if (x < xmin) xmin = x;
+                            if (x > xmax) xmax = x;
+                            if (y < ymin) ymin = y;
+                            if (y > ymax) ymax = y;
+                        }
+                    });
+                };
+                processCoords(geom.coordinates);
+                
+                sectors.push({
+                    geom: geom,
+                    situacao: sit,
+                    bbox: [xmin, xmax, ymin, ymax]
+                });
+            }
+        });
+    }
+
     buildingsGeoJSON.features.forEach(feat => {
         if (feat.geometry && feat.geometry.coordinates) {
             const coords = feat.geometry.coordinates;
-            // For Polygon, coordinates is an array of rings, the outer ring is coords[0]
+            let pt = null;
             if (feat.geometry.type === 'Polygon' && coords[0] && coords[0][0]) {
-                const pt = coords[0][0]; // Lng, Lat
-                state.heatmapPoints.push([pt[1], pt[0], 1.0]); // Lat, Lng, weight
+                pt = coords[0][0]; // Lng, Lat
             } else if (feat.geometry.type === 'MultiPolygon' && coords[0] && coords[0][0] && coords[0][0][0]) {
-                const pt = coords[0][0][0];
-                state.heatmapPoints.push([pt[1], pt[0], 1.0]);
+                pt = coords[0][0][0];
+            }
+            
+            if (pt) {
+                const lng = pt[0];
+                const lat = pt[1];
+                
+                // Determine building weight based on sector
+                let weight = 0.05; // Default rural weight
+                for (let sec of sectors) {
+                    const bbox = sec.bbox;
+                    if (lng >= bbox[0] && lng <= bbox[1] && lat >= bbox[2] && lat <= bbox[3]) {
+                        if (isPointInGeoJSONGeometry(lat, lng, sec.geom)) {
+                            weight = sec.situacao === 'Urbana' ? 1.0 : 0.05;
+                            break;
+                        }
+                    }
+                }
+                
+                state.heatmapPoints.push([lat, lng, weight]);
             }
         }
     });
