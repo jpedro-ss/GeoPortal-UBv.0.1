@@ -537,41 +537,6 @@ def add_geom_to_plot(ax, geom, edge_color, fill_color, alpha=1.0, hatch=None, li
                 pt = sub_geom.GetPoint(0)
                 ax.plot(pt[0], pt[1], marker='o', color=edge_color, markerfacecolor=fill_color, markersize=5, alpha=alpha)
 
-def load_sectors_classification():
-    filepath = os.path.join(DATA_DIR, "setores.geojson")
-    sectors = []
-    if os.path.exists(filepath):
-        try:
-            driver = ogr.GetDriverByName("GeoJSON")
-            ds = driver.Open(filepath, 0)
-            if ds:
-                layer = ds.GetLayer()
-                for feat in layer:
-                    geom = feat.GetGeometryRef()
-                    if geom:
-                        geom_clone = geom.Clone()
-                        sit = feat.GetField("SITUACAO")
-                        extent = geom_clone.GetEnvelope() # xmin, xmax, ymin, ymax
-                        sectors.append({
-                            'geom': geom_clone,
-                            'extent': extent,
-                            'situacao': sit
-                        })
-        except Exception as e:
-            print(f"Error loading sectors for building weight: {e}")
-    return sectors
-
-def get_building_weight(pt, sectors):
-    x, y = pt
-    point = ogr.Geometry(ogr.wkbPoint)
-    point.AddPoint(x, y)
-    for sec in sectors:
-        ext = sec['extent']
-        if ext[0] <= x <= ext[1] and ext[2] <= y <= ext[3]:
-            if sec['geom'].Contains(point):
-                return 1.0 if sec['situacao'] == 'Urbana' else 0.05
-    return 0.05
-
 def plot_all_active_layers(ax, xmin, ymin, xmax, ymax, active_layers, basemap="osm", target_cod_imovel=None):
     if basemap in ["osm", "satellite"]:
         try:
@@ -854,9 +819,7 @@ def plot_all_active_layers(ax, xmin, ymin, xmax, ymax, active_layers, basemap="o
                 if ds:
                     layer = ds.GetLayer()
                     layer.SetSpatialFilter(bbox_geom)
-                    sectors = load_sectors_classification()
                     pts = []
-                    weights = []
                     for feat in layer:
                         geom = feat.GetGeometryRef()
                         if geom:
@@ -864,17 +827,53 @@ def plot_all_active_layers(ax, xmin, ymin, xmax, ymax, active_layers, basemap="o
                             if centroid:
                                 pt = centroid.GetPoint(0)
                                 pts.append(pt[:2])
-                                w = get_building_weight(pt[:2], sectors)
-                                weights.append(w)
                     if pts:
                         pts = np.array(pts)
+                        
+                        # Calculate density grid locally
+                        cell_size = 0.0008
+                        xs = pts[:, 0]
+                        ys = pts[:, 1]
+                        xmin_p, xmax_p = xs.min(), xs.max()
+                        ymin_p, ymax_p = ys.min(), ys.max()
+                        
+                        # Map points to cells
+                        cell_counts = {}
+                        for x, y in pts:
+                            cx = int((x - xmin_p) // cell_size)
+                            cy = int((y - ymin_p) // cell_size)
+                            key = (cx, cy)
+                            cell_counts[key] = cell_counts.get(key, 0) + 1
+                            
+                        weights = []
+                        for x, y in pts:
+                            cx = int((x - xmin_p) // cell_size)
+                            cy = int((y - ymin_p) // cell_size)
+                            
+                            local_count = 0
+                            for dx in range(-1, 2):
+                                for dy in range(-1, 2):
+                                    local_count += cell_counts.get((cx + dx, cy + dy), 0)
+                            
+                            if local_count >= 18:
+                                w = 1.0
+                            elif local_count >= 6:
+                                w = 0.4
+                            elif local_count >= 3:
+                                w = 0.15
+                            else:
+                                w = 0.03
+                            weights.append(w)
+                        
                         weights = np.array(weights)
                         grid_x, grid_y = np.meshgrid(np.linspace(xmin, xmax, 150), np.linspace(ymin, ymax, 150))
                         grid_z = np.zeros_like(grid_x)
                         sigma = max(0.001, (xmax - xmin) * 0.015)
+                        
                         for pt, w in zip(pts, weights):
                             dist_sq = (grid_x - pt[0])**2 + (grid_y - pt[1])**2
                             grid_z += w * np.exp(-dist_sq / (2 * (sigma**2)))
+                            
                         max_val = grid_z.max()
                         if max_val > 0:
                             grid_masked = np.ma.masked_where(grid_z < (max_val * 0.05), grid_z)
