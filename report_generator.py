@@ -74,7 +74,7 @@ def get_tile_with_cache(basemap, z, x, y):
         url = f"https://{sub}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "GeoPortalUbaira/1.0 (jpedro-ss/GeoPortal-UBv.0.1; contact: joao_)"
     }
     
     try:
