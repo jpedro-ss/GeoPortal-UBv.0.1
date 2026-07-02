@@ -1625,7 +1625,7 @@ function initTools() {
         );
         
         const activeLayers = state.layers
-            .filter(l => state.map.hasLayer(l.layerObject) || l.visible)
+            .filter(l => (l.layerObject && state.map.hasLayer(l.layerObject)) || l.visible)
             .map(l => l.id);
         
         fetch(`${apiBase}/api/generate_report?type=municipal&options=${options.join(',')}&basemap=${state.currentBaseMap}&active_layers=${encodeURIComponent(activeLayers.join(','))}`)
@@ -1664,7 +1664,7 @@ function initTools() {
     document.getElementById('btn-export-geopdf').addEventListener('click', () => {
         const bounds = state.map.getBounds();
         const activeLayers = state.layers
-            .filter(l => state.map.hasLayer(l.layerObject) || l.visible)
+            .filter(l => (l.layerObject && state.map.hasLayer(l.layerObject)) || l.visible)
             .map(l => l.id);
             
         showModal(
@@ -1781,7 +1781,7 @@ window.downloadPropertyReport = function(cod_imovel) {
         );
         
         const activeLayers = state.layers
-            .filter(l => state.map.hasLayer(l.layerObject) || l.visible)
+            .filter(l => (l.layerObject && state.map.hasLayer(l.layerObject)) || l.visible)
             .map(l => l.id);
 
         fetch(`${apiBase}/api/generate_report?type=property&cod_imovel=${encodeURIComponent(cod_imovel)}&options=${options.join(',')}&basemap=${state.currentBaseMap}&active_layers=${encodeURIComponent(activeLayers.join(','))}`)
