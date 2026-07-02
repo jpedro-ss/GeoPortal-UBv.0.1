@@ -812,41 +812,35 @@ def plot_all_active_layers(ax, xmin, ymin, xmax, ymax, active_layers, basemap="o
                 print(f"Error plotting setores_populacao: {e}")
                 
     if 'calor_populacional' in active_layers:
-        filepath = os.path.join(DATA_DIR, "setores.geojson")
+        filepath = os.path.join(DATA_DIR, "construcoes_precisas.geojson")
         if os.path.exists(filepath):
             try:
                 ds = driver.Open(filepath, 0)
                 if ds:
                     layer = ds.GetLayer()
                     layer.SetSpatialFilter(bbox_geom)
-                    centroids = []
-                    densities = []
+                    pts = []
                     for feat in layer:
                         geom = feat.GetGeometryRef()
                         if geom:
                             centroid = geom.Centroid()
                             if centroid:
                                 pt = centroid.GetPoint(0)
-                                cd_setor = feat.GetField("CD_SETOR")
-                                situacao = feat.GetField("SITUACAO")
-                                dens = get_deterministic_density(cd_setor, situacao)
-                                centroids.append(pt[:2])
-                                densities.append(dens)
-                    if centroids:
-                        centroids = np.array(centroids)
-                        densities = np.array(densities)
+                                pts.append(pt[:2])
+                    if pts:
+                        pts = np.array(pts)
                         grid_x, grid_y = np.meshgrid(np.linspace(xmin, xmax, 150), np.linspace(ymin, ymax, 150))
                         grid_z = np.zeros_like(grid_x)
-                        sigma = max(0.005, (xmax - xmin) * 0.03)
-                        for pt, dens in zip(centroids, densities):
+                        sigma = max(0.001, (xmax - xmin) * 0.015)
+                        for pt in pts:
                             dist_sq = (grid_x - pt[0])**2 + (grid_y - pt[1])**2
-                            grid_z += dens * np.exp(-dist_sq / (2 * (sigma**2)))
+                            grid_z += np.exp(-dist_sq / (2 * (sigma**2)))
                         max_val = grid_z.max()
                         if max_val > 0:
-                            grid_masked = np.ma.masked_where(grid_z < (max_val * 0.01), grid_z)
+                            grid_masked = np.ma.masked_where(grid_z < (max_val * 0.05), grid_z)
                             ax.imshow(grid_masked, extent=[xmin, xmax, ymin, ymax], origin='lower', cmap='YlOrRd', alpha=0.5, zorder=2)
             except Exception as e:
-                print(f"Error plotting calor_populacional heatmap: {e}")
+                print(f"Error plotting calor_populacional heatmap from buildings: {e}")
 
 def draw_map_side_panel(fig, ax_panel, active_layers, scale_text, map_title_type, title_color, is_geopdf=False):
     logo_path = os.path.join(DATA_DIR, "brasao_ubaira.png")

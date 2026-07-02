@@ -760,8 +760,6 @@ async function loadSingleLayer(layerState) {
                     }
                 });
 
-                buildPopulationHeatmapPoints(data);
-
             } else {
                 layerState.layerObject = L.geoJSON(data, {
                     style: layerState.style,
@@ -797,6 +795,10 @@ async function loadSingleLayer(layerState) {
                         layer.bindPopup(popupHTML);
                     }
                 });
+
+                if (layerState.id === 'construcoes_precisas') {
+                    buildHeatmapPointsFromBuildings(data);
+                }
             }
             
         } else if (layerState.type === 'raster') {
@@ -805,16 +807,16 @@ async function loadSingleLayer(layerState) {
                 interactive: true
             });
         } else if (layerState.type === 'heatmap') {
-            const popLayer = state.layers.find(l => l.id === 'setores_populacao');
-            if (popLayer && !popLayer.layerObject) {
-                await loadSingleLayer(popLayer);
+            const buildLayer = state.layers.find(l => l.id === 'construcoes_precisas');
+            if (buildLayer && !buildLayer.layerObject) {
+                await loadSingleLayer(buildLayer);
             }
             layerState.layerObject = {
                 addTo: (map) => {
                     if (state.heatmapPoints.length > 0) {
                         state.heatmapLayer = L.heatLayer(state.heatmapPoints, {
-                            radius: 22,
-                            blur: 15,
+                            radius: 18,
+                            blur: 12,
                             maxZoom: 16,
                             gradient: {0.4: 'blue', 0.6: 'cyan', 0.7: 'lime', 0.8: 'yellow', 1.0: 'red'}
                         }).addTo(map);
@@ -884,49 +886,19 @@ async function loadAllLayers() {
 
 // Generate heatmap points from sectors
 // Generate heatmap points from sectors (deterministic and stable)
-function buildPopulationHeatmapPoints(secteursGeoJSON) {
+// Generate heatmap points from precise buildings (deterministic and stable)
+function buildHeatmapPointsFromBuildings(buildingsGeoJSON) {
     state.heatmapPoints = [];
-    
-    secteursGeoJSON.features.forEach(feat => {
-        const sit = feat.properties.SITUACAO;
-        const cdSetor = feat.properties.CD_SETOR || 'default';
-        const rand = createSeedableRandom(cdSetor);
-        let latSum = 0, lngSum = 0, ptCount = 0;
-        
-        const processCoords = (coords) => {
-            coords.forEach(coord => {
-                if (Array.isArray(coord[0])) {
-                    processCoords(coord);
-                } else {
-                    lngSum += coord[0];
-                    latSum += coord[1];
-                    ptCount++;
-                }
-            });
-        };
-        
-        if (feat.geometry.coordinates) {
-            processCoords(feat.geometry.coordinates);
-        }
-        
-        if (ptCount > 0) {
-            const centroidLat = latSum / ptCount;
-            const centroidLng = lngSum / ptCount;
-            
-            if (sit === 'Urbana') {
-                for (let i = 0; i < 35; i++) {
-                    const rLat = centroidLat + (rand() - 0.5) * 0.005;
-                    const rLng = centroidLng + (rand() - 0.5) * 0.005;
-                    const weight = 0.5 + rand() * 0.5;
-                    state.heatmapPoints.push([rLat, rLng, weight]);
-                }
-            } else {
-                for (let i = 0; i < 4; i++) {
-                    const rLat = centroidLat + (rand() - 0.5) * 0.015;
-                    const rLng = centroidLng + (rand() - 0.5) * 0.015;
-                    const weight = 0.15 + rand() * 0.15;
-                    state.heatmapPoints.push([rLat, rLng, weight]);
-                }
+    buildingsGeoJSON.features.forEach(feat => {
+        if (feat.geometry && feat.geometry.coordinates) {
+            const coords = feat.geometry.coordinates;
+            // For Polygon, coordinates is an array of rings, the outer ring is coords[0]
+            if (feat.geometry.type === 'Polygon' && coords[0] && coords[0][0]) {
+                const pt = coords[0][0]; // Lng, Lat
+                state.heatmapPoints.push([pt[1], pt[0], 1.0]); // Lat, Lng, weight
+            } else if (feat.geometry.type === 'MultiPolygon' && coords[0] && coords[0][0] && coords[0][0][0]) {
+                const pt = coords[0][0][0];
+                state.heatmapPoints.push([pt[1], pt[0], 1.0]);
             }
         }
     });
