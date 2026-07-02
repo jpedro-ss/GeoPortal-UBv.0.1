@@ -87,7 +87,13 @@ const LAYER_CONFIGS = [
             fillOpacity: 0.1
         },
         popupTitle: 'Setor Censitário',
-        popupFields: { 'CD_SETOR': 'Código Setor', 'SITUACAO': 'Situação Censitária' }
+        popupFields: { 
+            'CD_SETOR': 'Código Setor', 
+            'SITUACAO': 'Situação Censitária',
+            'populacao': 'População (Censo 2022)',
+            'domicilios': 'Domicílios',
+            'qtd_const': 'Quantidade de Edificações'
+        }
     },
     {
         id: 'setores_populacao',
@@ -108,6 +114,37 @@ const LAYER_CONFIGS = [
         url: null, // Built dynamically from setores centroids
         visible: false,
         style: null
+    },
+    {
+        id: 'estradas_precisas',
+        name: 'Estradas Vicinais (Meta/OSM)',
+        category: 'urbano',
+        type: 'vector',
+        url: 'data/estradas_precisas.geojson',
+        visible: false,
+        style: {
+            color: '#475569',
+            weight: 1.8,
+            opacity: 0.85
+        },
+        popupTitle: 'Estrada',
+        popupFields: { 'id': 'ID Estrada', 'sources': 'Fontes', 'surface': 'Superfície' }
+    },
+    {
+        id: 'construcoes_precisas',
+        name: 'Edificações (Google/MS)',
+        category: 'urbano',
+        type: 'vector',
+        url: 'data/construcoes_precisas.geojson',
+        visible: false,
+        style: {
+            color: '#b91c1c',
+            weight: 0.8,
+            fillColor: '#ef4444',
+            fillOpacity: 0.7
+        },
+        popupTitle: 'Edificação',
+        popupFields: { 'id': 'ID Edificação', 'sources': 'Fontes', 'subtype': 'Subtipo' }
     },
     {
         id: 'zona_urbana',
@@ -484,7 +521,8 @@ function initMap() {
         center: [-13.29, -39.66],
         zoom: 11.5,
         zoomControl: true,
-        attributionControl: true
+        attributionControl: true,
+        preferCanvas: true
     });
 
     // OSM Basemap
@@ -632,6 +670,149 @@ function buildLayerTree() {
 }
 
 // Load all GeoJSON and Rasters
+// Load a single layer lazily from the server
+async function loadSingleLayer(layerState) {
+    if (layerState.layerObject) return; // already loaded
+
+    const chk = document.getElementById(`chk-${layerState.id}`);
+    const item = document.getElementById(`layer-item-${layerState.id}`);
+    
+    // Add a visual loading notch spinner
+    let spinner = null;
+    if (item) {
+        spinner = document.createElement('i');
+        spinner.className = 'fa-solid fa-circle-notch fa-spin text-warning';
+        spinner.style.marginLeft = '8px';
+        const control = item.querySelector('.layer-control');
+        if (control) control.appendChild(spinner);
+    }
+
+    try {
+        if (layerState.type === 'vector') {
+            const response = await fetch(layerState.url);
+            if (!response.ok) throw new Error(`Could not load ${layerState.url}`);
+            const data = await response.json();
+            
+            layerState.geoJSONData = data;
+            
+            if (layerState.id === 'setores_populacao') {
+                // Load dynamic sector demographics
+                data.features.forEach(feat => {
+                    if (feat.properties.Densidade === undefined) {
+                        const sit = feat.properties.SITUACAO;
+                        if (sit === 'Urbana') {
+                            feat.properties.Densidade = Math.round(180 + Math.random() * 320);
+                        } else {
+                            feat.properties.Densidade = Math.round(5 + Math.random() * 20);
+                        }
+                    }
+                });
+
+                layerState.layerObject = L.geoJSON(data, {
+                    style: (feat) => {
+                        const dens = feat.properties.Densidade;
+                        let fillColor = '#15803d';
+                        if (dens > 300) fillColor = '#ef4444';
+                        else if (dens > 150) fillColor = '#f97316';
+                        else if (dens > 50) fillColor = '#eab308';
+                        else if (dens > 10) fillColor = '#84cc16';
+                        
+                        return {
+                            color: '#ffffff',
+                            weight: 1,
+                            opacity: 0.5,
+                            fillColor: fillColor,
+                            fillOpacity: feat.properties.SITUACAO === 'Urbana' ? 0.45 : 0.2
+                        };
+                    },
+                    onEachFeature: (feature, layer) => {
+                        let popupHTML = `<div class="popup-header">Setor Demográfico</div><div class="popup-body"><table class="popup-table">`;
+                        popupHTML += `<tr><td class="label">Código Setor</td><td class="val">${feature.properties.CD_SETOR}</td></tr>`;
+                        popupHTML += `<tr><td class="label">Situação</td><td class="val">${feature.properties.SITUACAO}</td></tr>`;
+                        popupHTML += `<tr><td class="label">Densidade</td><td class="val"><strong>${feature.properties.Densidade} Hab/km²</strong> (Censo)</td></tr>`;
+                        popupHTML += `</table></div>`;
+                        layer.bindPopup(popupHTML);
+                    }
+                });
+
+                buildPopulationHeatmapPoints(data);
+
+            } else {
+                layerState.layerObject = L.geoJSON(data, {
+                    style: layerState.style,
+                    pointToLayer: (feature, latlng) => {
+                        if (layerState.id === 'app_nascente') {
+                            return L.circleMarker(latlng, {
+                                radius: 5.5,
+                                fillColor: '#06b6d4',
+                                color: '#22d3ee',
+                                weight: 1.5,
+                                opacity: 1,
+                                fillOpacity: 0.8
+                            });
+                        }
+                        return L.circleMarker(latlng, layerState.style);
+                    },
+                    onEachFeature: (feature, layer) => {
+                        let popupHTML = `<div class="popup-header">${layerState.popupTitle}</div><div class="popup-body"><table class="popup-table">`;
+                        for (let [fieldKey, fieldLabel] of Object.entries(layerState.popupFields)) {
+                            let val = feature.properties[fieldKey] !== undefined ? feature.properties[fieldKey] : '--';
+                            if (fieldKey === 'status_imo') {
+                                val = val === 'AT' ? '<span style="color:#10b981;font-weight:bold;">Ativo (AT)</span>' : val === 'PE' ? '<span style="color:#f59e0b;font-weight:bold;">Pendente (PE)</span>' : val;
+                            }
+                            if (fieldKey === 'situacao_a') {
+                                val = val === 'Aguardando anllise' || val === 'Aguardando análise' ? '<span style="color:#f59e0b;">Aguardando Análise</span>' : val;
+                            }
+                            if (fieldKey === 'nu_area_im' && typeof val === 'number') {
+                                val = val.toFixed(2) + ' ha';
+                            }
+                            popupHTML += `<tr><td class="label">${fieldLabel}</td><td class="val">${val}</td></tr>`;
+                        }
+                        popupHTML += `</table></div>`;
+                        layer.bindPopup(popupHTML);
+                    }
+                });
+            }
+            
+        } else if (layerState.type === 'raster') {
+            layerState.layerObject = L.imageOverlay(layerState.url, RASTER_BOUNDS, {
+                opacity: layerState.opacity || 1.0,
+                interactive: true
+            });
+        } else if (layerState.type === 'heatmap') {
+            const popLayer = state.layers.find(l => l.id === 'setores_populacao');
+            if (popLayer && !popLayer.layerObject) {
+                await loadSingleLayer(popLayer);
+            }
+            layerState.layerObject = {
+                addTo: (map) => {
+                    if (state.heatmapPoints.length > 0) {
+                        state.heatmapLayer = L.heatLayer(state.heatmapPoints, {
+                            radius: 22,
+                            blur: 15,
+                            maxZoom: 16,
+                            gradient: {0.4: 'blue', 0.6: 'cyan', 0.7: 'lime', 0.8: 'yellow', 1.0: 'red'}
+                        }).addTo(map);
+                    }
+                },
+                removeFrom: (map) => {
+                    if (state.heatmapLayer) {
+                        map.removeLayer(state.heatmapLayer);
+                        state.heatmapLayer = null;
+                    }
+                }
+            };
+        }
+    } catch (error) {
+        console.error(`Error loading layer ${layerState.name}:`, error);
+        if (chk) chk.checked = false;
+        layerState.visible = false;
+    } finally {
+        if (spinner) spinner.remove();
+    }
+}
+
+// Load default visible layers and initialize progress loader
 async function loadAllLayers() {
     const totalLayers = state.layers.length;
     let loadedCount = 0;
@@ -652,127 +833,19 @@ async function loadAllLayers() {
 
     for (let layerState of state.layers) {
         try {
-            if (layerState.type === 'vector') {
-                const response = await fetch(layerState.url);
-                if (!response.ok) throw new Error(`Could not load ${layerState.url}`);
-                const data = await response.json();
-                
-                layerState.geoJSONData = data;
-                
-                if (layerState.id === 'setores_populacao') {
-                    // Load dynamic sector demographics
-                    data.features.forEach(feat => {
-                        const sit = feat.properties.SITUACAO;
-                        if (sit === 'Urbana') {
-                            feat.properties.Densidade = Math.round(180 + Math.random() * 320); // dense
-                        } else {
-                            feat.properties.Densidade = Math.round(5 + Math.random() * 20); // rural sparse
-                        }
-                    });
-
-                    layerState.layerObject = L.geoJSON(data, {
-                        style: (feat) => {
-                            const dens = feat.properties.Densidade;
-                            let fillColor = '#15803d'; // low density
-                            if (dens > 300) fillColor = '#ef4444'; // high
-                            else if (dens > 150) fillColor = '#f97316'; // moderate
-                            else if (dens > 50) fillColor = '#eab308'; // low-mod
-                            else if (dens > 10) fillColor = '#84cc16'; // low
-                            
-                            return {
-                                color: '#ffffff',
-                                weight: 1,
-                                opacity: 0.5,
-                                fillColor: fillColor,
-                                fillOpacity: feat.properties.SITUACAO === 'Urbana' ? 0.45 : 0.2
-                            };
-                        },
-                        onEachFeature: (feature, layer) => {
-                            let popupHTML = `<div class="popup-header">Setor Demográfico</div><div class="popup-body"><table class="popup-table">`;
-                            popupHTML += `<tr><td class="label">Código Setor</td><td class="val">${feature.properties.CD_SETOR}</td></tr>`;
-                            popupHTML += `<tr><td class="label">Situação</td><td class="val">${feature.properties.SITUACAO}</td></tr>`;
-                            popupHTML += `<tr><td class="label">Densidade</td><td class="val"><strong>${feature.properties.Densidade} Hab/km²</strong> (Censo)</td></tr>`;
-                            popupHTML += `</table></div>`;
-                            layer.bindPopup(popupHTML);
-                        }
-                    });
-
-                    buildPopulationHeatmapPoints(data);
-
-                } else {
-                    layerState.layerObject = L.geoJSON(data, {
-                        style: layerState.style,
-                        pointToLayer: (feature, latlng) => {
-                            if (layerState.id === 'app_nascente') {
-                                return L.circleMarker(latlng, {
-                                    radius: 5.5,
-                                    fillColor: '#06b6d4',
-                                    color: '#22d3ee',
-                                    weight: 1.5,
-                                    opacity: 1,
-                                    fillOpacity: 0.8
-                                });
-                            }
-                            return L.circleMarker(latlng, layerState.style);
-                        },
-                        onEachFeature: (feature, layer) => {
-                            let popupHTML = `<div class="popup-header">${layerState.popupTitle}</div><div class="popup-body"><table class="popup-table">`;
-                            for (let [fieldKey, fieldLabel] of Object.entries(layerState.popupFields)) {
-                                let val = feature.properties[fieldKey] !== undefined ? feature.properties[fieldKey] : '--';
-                                if (fieldKey === 'status_imo') {
-                                    val = val === 'AT' ? '<span style="color:#10b981;font-weight:bold;">Ativo (AT)</span>' : val === 'PE' ? '<span style="color:#f59e0b;font-weight:bold;">Pendente (PE)</span>' : val;
-                                }
-                                if (fieldKey === 'situacao_a') {
-                                    val = val === 'Aguardando anllise' || val === 'Aguardando análise' ? '<span style="color:#f59e0b;">Aguardando Análise</span>' : val;
-                                }
-                                if (fieldKey === 'nu_area_im' && typeof val === 'number') {
-                                    val = val.toFixed(2) + ' ha';
-                                }
-                                popupHTML += `<tr><td class="label">${fieldLabel}</td><td class="val">${val}</td></tr>`;
-                            }
-                            popupHTML += `</table></div>`;
-                            layer.bindPopup(popupHTML);
-                        }
-                    });
-                }
-
-                if (layerState.visible && layerState.layerObject) {
+            // Load immediately only if it starts visible
+            if (layerState.visible) {
+                await loadSingleLayer(layerState);
+                if (layerState.layerObject) {
                     layerState.layerObject.addTo(state.map);
-                }
-                
-            } else if (layerState.type === 'raster') {
-                layerState.layerObject = L.imageOverlay(layerState.url, RASTER_BOUNDS, {
-                    opacity: layerState.opacity,
-                    interactive: true
-                });
-
-                if (layerState.visible) {
-                    layerState.layerObject.addTo(state.map);
-                    const legendDiv = document.getElementById(`raster-legend-${layerState.id}`);
-                    if (legendDiv) legendDiv.style.display = 'flex';
-                }
-            } else if (layerState.type === 'heatmap') {
-                layerState.layerObject = {
-                    addTo: (map) => {
-                        if (state.heatmapPoints.length > 0) {
-                            state.heatmapLayer = L.heatLayer(state.heatmapPoints, {
-                                radius: 22,
-                                blur: 15,
-                                maxZoom: 16,
-                                gradient: {0.4: 'blue', 0.6: 'cyan', 0.7: 'lime', 0.8: 'yellow', 1.0: 'red'}
-                            }).addTo(map);
-                        }
-                    },
-                    removeFrom: (map) => {
-                        if (state.heatmapLayer) {
-                            map.removeLayer(state.heatmapLayer);
-                            state.heatmapLayer = null;
-                        }
+                    if (layerState.type === 'raster') {
+                        const legendDiv = document.getElementById(`raster-legend-${layerState.id}`);
+                        if (legendDiv) legendDiv.style.display = 'flex';
                     }
-                };
+                }
             }
         } catch (error) {
-            console.error(`Error loading layer ${layerState.name}:`, error);
+            console.error(`Error loading layer ${layerState.name} on startup:`, error);
         } finally {
             updateProgress();
         }
@@ -892,23 +965,41 @@ function setupUIEvents() {
         const chk = document.getElementById(`chk-${layerState.id}`);
         if (!chk) return;
 
-        chk.addEventListener('change', (e) => {
+        chk.addEventListener('change', async (e) => {
             const isChecked = e.target.checked;
             layerState.visible = isChecked;
             
             if (isChecked) {
-                if (layerState.type === 'heatmap') {
-                    layerState.layerObject.addTo(state.map);
-                } else {
-                    layerState.layerObject.addTo(state.map);
+                if (!layerState.layerObject) {
+                    chk.disabled = true;
+                    const origText = chk.nextElementSibling.innerText;
+                    chk.nextElementSibling.innerText = `${origText} (Carregando...)`;
+                    try {
+                        await loadSingleLayer(layerState);
+                    } catch (err) {
+                        console.error(err);
+                    } finally {
+                        chk.nextElementSibling.innerText = origText;
+                        chk.disabled = false;
+                    }
                 }
-                const legendDiv = document.getElementById(`raster-legend-${layerState.id}`);
-                if (legendDiv) legendDiv.style.display = 'flex';
+                
+                if (layerState.layerObject) {
+                    if (layerState.type === 'heatmap') {
+                        layerState.layerObject.addTo(state.map);
+                    } else {
+                        layerState.layerObject.addTo(state.map);
+                    }
+                    const legendDiv = document.getElementById(`raster-legend-${layerState.id}`);
+                    if (legendDiv) legendDiv.style.display = 'flex';
+                }
             } else {
-                if (layerState.type === 'heatmap') {
-                    layerState.layerObject.removeFrom(state.map);
-                } else {
-                    state.map.removeLayer(layerState.layerObject);
+                if (layerState.layerObject) {
+                    if (layerState.type === 'heatmap') {
+                        layerState.layerObject.removeFrom(state.map);
+                    } else {
+                        state.map.removeLayer(layerState.layerObject);
+                    }
                 }
                 const legendDiv = document.getElementById(`raster-legend-${layerState.id}`);
                 if (legendDiv) legendDiv.style.display = 'none';
@@ -926,14 +1017,16 @@ function setupUIEvents() {
             slider.addEventListener('input', (e) => {
                 const val = e.target.value / 100;
                 if (layerState.type === 'raster') {
-                    layerState.layerObject.setOpacity(val);
+                    if (layerState.layerObject) layerState.layerObject.setOpacity(val);
                 } else {
                     layerState.style.fillOpacity = val;
                     layerState.style.opacity = val;
-                    layerState.layerObject.setStyle({
-                        fillOpacity: val,
-                        opacity: val
-                    });
+                    if (layerState.layerObject) {
+                        layerState.layerObject.setStyle({
+                            fillOpacity: val,
+                            opacity: val
+                        });
+                    }
                 }
             });
         }
@@ -1009,9 +1102,35 @@ function setupUIEvents() {
 }
 
 // Display selected Layer in Attribute Table
-function showLayerInAttributeTable(layerId) {
+async function showLayerInAttributeTable(layerId) {
     const layerState = state.layers.find(l => l.id === layerId);
-    if (!layerState || !layerState.geoJSONData) return;
+    if (!layerState) return;
+
+    if (!layerState.geoJSONData) {
+        const chk = document.getElementById(`chk-${layerState.id}`);
+        if (chk) {
+            chk.checked = true;
+            chk.disabled = true;
+            const origText = chk.nextElementSibling.innerText;
+            chk.nextElementSibling.innerText = `${origText} (Carregando...)`;
+            try {
+                await loadSingleLayer(layerState);
+                if (layerState.layerObject) {
+                    layerState.layerObject.addTo(state.map);
+                    const legendDiv = document.getElementById(`raster-legend-${layerState.id}`);
+                    if (legendDiv) legendDiv.style.display = 'flex';
+                }
+            } catch (err) {
+                console.error(err);
+            } finally {
+                chk.nextElementSibling.innerText = origText;
+                chk.disabled = false;
+            }
+        } else {
+            await loadSingleLayer(layerState);
+        }
+    }
+    if (!layerState.geoJSONData) return;
 
     state.activeTableLayerId = layerId;
     state.selectedFeatureIndex = null;
